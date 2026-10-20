@@ -47,6 +47,180 @@ use crate::project::{
 };
 
 // ---------------------------------------------------------------------------
+// Flow_r-inspired design system
+//
+// Teal primary (#0f766e), slate neutrals, light page background, card
+// containers with rounded corners, small uppercase labels. Colours adapt to
+// the selected theme.
+// ---------------------------------------------------------------------------
+
+/// Colours for the current theme, mirroring the flow_r design tokens.
+#[derive(Clone, Copy)]
+struct Palette {
+    bg: egui::Color32,     // page background
+    surface: egui::Color32, // card background
+    border: egui::Color32,  // card / hairline border
+    ink: egui::Color32,    // primary text
+    muted: egui::Color32,  // secondary text
+    teal: egui::Color32,   // primary accent
+    teal_light: egui::Color32, // teal tint fill
+    soft: egui::Color32,   // subtle fill (hover / active strips)
+}
+
+impl Palette {
+    fn for_theme(theme: Theme) -> Self {
+        match theme {
+            Theme::Dark => Palette {
+                bg: egui::Color32::from_rgb(15, 23, 42),       // #0f172a
+                surface: egui::Color32::from_rgb(30, 41, 59),  // #1e293b
+                border: egui::Color32::from_rgb(51, 65, 85),   // #334155
+                ink: egui::Color32::from_rgb(241, 245, 249),   // #f1f5f9
+                muted: egui::Color32::from_rgb(148, 163, 184), // #94a3b8
+                teal: egui::Color32::from_rgb(94, 234, 212),   // #5eead4
+                teal_light: egui::Color32::from_rgb(15, 118, 110),
+                soft: egui::Color32::from_rgb(38, 50, 69),     // #263245
+            },
+            Theme::Light => Palette {
+                bg: egui::Color32::from_rgb(244, 246, 249),    // #f4f6f9
+                surface: egui::Color32::WHITE,
+                border: egui::Color32::from_rgb(226, 232, 240), // #e2e8f0
+                ink: egui::Color32::from_rgb(15, 23, 42),      // #0f172a
+                muted: egui::Color32::from_rgb(100, 116, 139), // #64748b
+                teal: egui::Color32::from_rgb(15, 118, 110),   // #0f766e
+                teal_light: egui::Color32::from_rgb(204, 251, 241),
+                soft: egui::Color32::from_rgb(248, 250, 252),  // #f8fafc
+            },
+        }
+    }
+}
+
+/// A card container: rounded, bordered, filled surface.
+fn card_frame(p: Palette) -> egui::Frame {
+    egui::Frame::none()
+        .fill(p.surface)
+        .stroke(egui::Stroke::new(1.0, p.border))
+        .rounding(10.0)
+        .inner_margin(egui::Margin::same(10.0))
+}
+
+/// A card header: bold title on the left, optional muted subtitle / trailing
+/// content on the right, followed by a hairline rule.
+fn card_head(ui: &mut egui::Ui, p: Palette, title: &str, trailing: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(title)
+                .strong()
+                .small()
+                .color(p.ink),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            trailing(ui);
+        });
+    });
+    ui.add_space(2.0);
+    ui.separator();
+}
+
+/// A muted section label (like flow_r's "card-sub" / mini titles).
+/// Uses the default text size so it stays consistent with dropdowns and
+/// other controls rather than appearing smaller than them.
+fn section_label(ui: &mut egui::Ui, p: Palette, text: &str) {
+    ui.label(
+        egui::RichText::new(text)
+            .color(p.muted),
+    );
+}
+
+/// A small, teal-accented primary button.
+fn primary_button(ui: &mut egui::Ui, p: Palette, text: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(text).small().strong().color(p.surface),
+        )
+        .fill(p.teal)
+        .rounding(6.0),
+    )
+}
+
+/// An outlined secondary button.
+fn secondary_button(ui: &mut egui::Ui, p: Palette, text: &str) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(text).small().color(p.ink),
+        )
+        .fill(p.soft)
+        .stroke(egui::Stroke::new(1.0, p.border))
+        .rounding(6.0),
+    )
+}
+
+/// An outlined secondary button with hover text.
+fn secondary_button_hover(
+    ui: &mut egui::Ui,
+    p: Palette,
+    text: &str,
+    hover: &str,
+) -> egui::Response {
+    let button = egui::Button::new(
+        egui::RichText::new(text).small().color(p.ink),
+    )
+    .fill(p.soft)
+    .stroke(egui::Stroke::new(1.0, p.border))
+    .rounding(6.0);
+    ui.add(button).on_hover_text(hover)
+}
+
+/// A toggle-style plot tool button.
+fn tool_button(ui: &mut egui::Ui, p: Palette, label: &str, active: bool) -> egui::Response {
+    let text = egui::RichText::new(label)
+        .small()
+        .strong()
+        .color(if active { p.teal } else { p.muted });
+    let btn = egui::Button::new(text).rounding(6.0);
+    if active {
+        ui.add_enabled(false, btn.fill(p.teal_light).stroke(egui::Stroke::new(1.0, p.teal)))
+    } else {
+        ui.add(btn.fill(p.soft).stroke(egui::Stroke::new(1.0, p.border)))
+    }
+}
+
+/// The header bar: brand mark + app name on the left, menu bar on the right.
+fn header_bar(ui: &mut egui::Ui, p: Palette, menu: impl FnOnce(&mut egui::Ui)) {
+    ui.horizontal(|ui| {
+        // Brand mark: rounded square with a teal gradient feel (solid teal).
+        egui::Frame::none()
+            .fill(p.teal)
+            .rounding(9.0)
+            .inner_margin(egui::Margin::same(8.0))
+            .show(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("fR")
+                        .strong()
+                        .heading()
+                        .color(p.surface),
+                );
+            });
+        ui.add_space(10.0);
+        ui.vertical(|ui| {
+            ui.label(
+                egui::RichText::new("flowers")
+                    .strong()
+                    .color(p.ink),
+            );
+            ui.label(
+                egui::RichText::new("flow cytometry analysis")
+                    .small()
+                    .color(p.muted),
+            );
+        });
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+        egui::menu::bar(ui, menu);
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Gate model
 // ---------------------------------------------------------------------------
 
@@ -1132,7 +1306,6 @@ struct PlotCfg {
     gates: Vec<GateVisual>,
     /// Draggable manipulation handles for the selected gate (data coords).
     handles: Vec<([f64; 2], HandleId)>,
-    size: (f32, f32),
     x_label: String,
     y_label: String,
     interactive: bool,
@@ -1268,8 +1441,9 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
     };
 
     Plot::new(id)
-        .width(cfg.size.0)
-        .height(cfg.size.1)
+        // Let egui_plot size to the available UI space instead of a fixed
+        // size, so the plot is never cut off on the right edge and the Y axis
+        // label gets proper room.
         .view_aspect(1.0)
         .allow_boxed_zoom(false)
         .allow_drag(false)
@@ -1873,13 +2047,29 @@ fn default_param_pair(fcs: &FcsFile) -> (usize, usize) {
 /// Both branches use Rust's shortest round-tripping float formatting, so the
 /// displayed text parses back to exactly the same value — focusing a field and
 /// clicking away never nudges the number.
+/// Formats a number for axis-range display.
+///
+/// Values with magnitude >= 1e5 or < 1e-2 are shown in scientific notation
+/// rounded to 3 significant figures (e.g. `3.45e6`, `1.00e-4`); mid-range
+/// values are shown in plain notation. The displayed text round-trips exactly
+/// when parsed back.
 fn format_edit_num(v: f64) -> String {
     if v == 0.0 {
         return "0".to_string();
     }
     let abs = v.abs();
     if abs >= 1.0e5 || abs < 1.0e-2 {
-        format!("{v:e}")
+        // 3 significant figures in scientific notation, e.g. 3.45e6
+        let mut exponent = abs.log10().floor() as i32;
+        let mantissa = v / 10.0f64.powi(exponent);
+        // Round mantissa to 2 decimal places (3 sig figs total).
+        let mut rounded = (mantissa * 100.0).round() / 100.0;
+        // Handle rounding carry (e.g. 9.995 -> 10.0 -> 1.00e(exponent+1)).
+        if rounded >= 10.0 {
+            rounded /= 10.0;
+            exponent += 1;
+        }
+        format!("{rounded:.2}e{exponent}")
     } else {
         format!("{v}")
     }
@@ -2128,6 +2318,11 @@ fn bounds_for(values: &[f64], scale: AxisScale) -> (f64, f64) {
 impl FlowersApp {
     fn current_fcs(&self) -> Option<&FcsFile> {
         self.current_sample.map(|i| &self.samples[i].fcs)
+    }
+
+    /// Flow_r-inspired colour tokens for the active theme.
+    fn palette(&self) -> Palette {
+        Palette::for_theme(self.theme)
     }
 
     fn load_file(&mut self, path: &std::path::Path) {
@@ -3009,7 +3204,7 @@ impl FlowersApp {
     /// Controls for the detached population window. Mirrors the main window so
     /// every plotting feature (axes, scales, ranges, colour, view, gating and
     /// gate manipulation) is available there too.
-    fn popout_controls(&mut self, ui: &mut egui::Ui, gate_idx: usize) {
+    fn popout_controls(&mut self, ui: &mut egui::Ui, p: Palette, gate_idx: usize) {
         let names: Vec<String> = match self.current_fcs() {
             Some(f) => (0..f.parameters.len())
                 .map(|i| param_display_name(f, i))
@@ -3043,14 +3238,18 @@ impl FlowersApp {
                         ui.selectable_value(&mut self.popout.y_param, Some(i), name.clone());
                     }
                 });
-            if ui.small_button("Auto range").clicked() {
+            if secondary_button(ui, p, "Auto range").clicked() {
                 self.popout_auto_range();
             }
-            ui.label(format!("{subset_len} events"));
+            ui.label(
+                egui::RichText::new(format!("{subset_len} events"))
+                    .small()
+                    .color(p.muted),
+            );
         });
 
         ui.horizontal(|ui| {
-            ui.label("X scale:");
+            ui.label(egui::RichText::new("X scale:").small().color(p.muted));
             for scale in [AxisScale::Linear, AxisScale::Log] {
                 if ui
                     .selectable_label(self.popout.x_scale == scale, scale.label())
@@ -3060,13 +3259,13 @@ impl FlowersApp {
                     self.popout_auto_range();
                 }
             }
-            ui.label("range:");
+            ui.label(egui::RichText::new("range:").small().color(p.muted));
             let span = (self.popout.x_range.1 - self.popout.x_range.0).abs().max(1.0);
             ui.add(range_drag_value(&mut self.popout.x_range.0, span));
             ui.add(range_drag_value(&mut self.popout.x_range.1, span));
         });
         ui.horizontal(|ui| {
-            ui.label("Y scale:");
+            ui.label(egui::RichText::new("Y scale:").small().color(p.muted));
             for scale in [AxisScale::Linear, AxisScale::Log] {
                 if ui
                     .selectable_label(self.popout.y_scale == scale, scale.label())
@@ -3076,17 +3275,17 @@ impl FlowersApp {
                     self.popout_auto_range();
                 }
             }
-            ui.label("range:");
+            ui.label(egui::RichText::new("range:").small().color(p.muted));
             let span = (self.popout.y_range.1 - self.popout.y_range.0).abs().max(1.0);
             ui.add(range_drag_value(&mut self.popout.y_range.0, span));
             ui.add(range_drag_value(&mut self.popout.y_range.1, span));
         });
 
         ui.horizontal(|ui| {
-            ui.label("Dot colour:");
+            ui.label(egui::RichText::new("Dot colour:").small().color(p.muted));
             ui.color_edit_button_srgba(&mut self.popout.point_color);
             ui.checkbox(&mut self.popout.gradient, "Gradient");
-            ui.label("View:");
+            ui.label(egui::RichText::new("View:").small().color(p.muted));
             for mode in [ViewMode::Dots, ViewMode::Contour, ViewMode::Histogram] {
                 if ui
                     .selectable_label(self.popout.view == mode, mode.label())
@@ -3101,7 +3300,7 @@ impl FlowersApp {
         });
 
         ui.horizontal(|ui| {
-            ui.label("New gate:");
+            ui.label(egui::RichText::new("New gate:").small().color(p.muted));
             for gt in NewGateType::ALL {
                 ui.radio_value(&mut self.popout.new_gate_type, gt, gt.label());
             }
@@ -3116,40 +3315,40 @@ impl FlowersApp {
                     .max(1.0);
                 let step = span * 0.02;
                 ui.horizontal(|ui| {
-                    ui.label("Transform:");
+                    ui.label(egui::RichText::new("Transform:").small().color(p.muted));
                     let mut t = false;
-                    if ui.small_button("⬅").clicked() {
+                    if secondary_button(ui, p, "⬅").clicked() {
                         self.gates[gi].kind.translate(-step, 0.0);
                         t = true;
                     }
-                    if ui.small_button("➡").clicked() {
+                    if secondary_button(ui, p, "➡").clicked() {
                         self.gates[gi].kind.translate(step, 0.0);
                         t = true;
                     }
-                    if ui.small_button("⬆").clicked() {
+                    if secondary_button(ui, p, "⬆").clicked() {
                         self.gates[gi].kind.translate(0.0, step);
                         t = true;
                     }
-                    if ui.small_button("⬇").clicked() {
+                    if secondary_button(ui, p, "⬇").clicked() {
                         self.gates[gi].kind.translate(0.0, -step);
                         t = true;
                     }
-                    if ui.small_button("⟲").on_hover_text("Rotate -5°").clicked() {
+                    if secondary_button_hover(ui, p, "⟲", "Rotate -5°").clicked() {
                         let c = self.gates[gi].kind.center();
                         self.gates[gi].kind.rotate_about(c, (-5.0f64).to_radians());
                         t = true;
                     }
-                    if ui.small_button("⟳").on_hover_text("Rotate +5°").clicked() {
+                    if secondary_button_hover(ui, p, "⟳", "Rotate +5°").clicked() {
                         let c = self.gates[gi].kind.center();
                         self.gates[gi].kind.rotate_about(c, (5.0f64).to_radians());
                         t = true;
                     }
-                    if ui.small_button("➕").on_hover_text("Enlarge").clicked() {
+                    if secondary_button_hover(ui, p, "➕", "Enlarge").clicked() {
                         let c = self.gates[gi].kind.center();
                         self.gates[gi].kind.scale_about(c, 1.1);
                         t = true;
                     }
-                    if ui.small_button("➖").on_hover_text("Shrink").clicked() {
+                    if secondary_button_hover(ui, p, "➖", "Shrink").clicked() {
                         let c = self.gates[gi].kind.center();
                         self.gates[gi].kind.scale_about(c, 0.9);
                         t = true;
@@ -3226,7 +3425,6 @@ impl FlowersApp {
             contour_levels: self.contour_levels,
             gates: self.gate_visuals(),
             handles,
-            size: (560.0, 520.0),
             x_label: format!("{} ({})", x_label, scale_label(self.x_scale)),
             y_label: if matches!(self.view_mode, ViewMode::Histogram) {
                 "Count".to_string()
@@ -3695,16 +3893,12 @@ impl FlowersApp {
     }
 
     /// The interactive layout canvas (drag to move, corner to resize).
-    fn layout_canvas(&mut self, ui: &mut egui::Ui) {
+    fn layout_canvas(&mut self, ui: &mut egui::Ui, p: Palette) {
         let canvas_size = egui::vec2(920.0, 560.0);
         let (response, painter) =
             ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
         let origin = response.rect.min;
-        let bg = if self.theme == Theme::Dark {
-            egui::Color32::from_gray(45)
-        } else {
-            egui::Color32::from_gray(225)
-        };
+        let bg = p.soft;
         painter.rect_filled(response.rect, 4.0_f32, bg);
 
         let pointer = ui.input(|i| i.pointer.interact_pos());
@@ -3855,9 +4049,9 @@ impl FlowersApp {
             );
 
             let stroke = if selected {
-                egui::Stroke::new(2.0_f32, egui::Color32::from_rgb(255, 140, 0))
+                egui::Stroke::new(2.0_f32, p.teal)
             } else {
-                egui::Stroke::new(1.0_f32, egui::Color32::from_gray(140))
+                egui::Stroke::new(1.0_f32, p.border)
             };
             painter.rect_stroke(r, 2.0_f32, stroke);
 
@@ -3866,7 +4060,7 @@ impl FlowersApp {
                     r.max - egui::vec2(14.0, 14.0),
                     egui::vec2(14.0, 14.0),
                 );
-                painter.rect_filled(handle, 2.0_f32, egui::Color32::from_rgb(255, 140, 0));
+                painter.rect_filled(handle, 2.0_f32, p.teal);
             }
         }
     }
@@ -3876,181 +4070,218 @@ impl FlowersApp {
         if !self.layout_open {
             return;
         }
+        let p = self.palette();
         let mut open = self.layout_open;
         egui::Window::new("Layout Editor")
             .open(&mut open)
             .resizable(true)
             .default_size([980.0, 700.0])
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("Add current plot").clicked() {
-                        self.add_layout_current();
-                    }
-                    let popout_open = self.popout.open;
-                    if ui
-                        .add_enabled(popout_open, egui::Button::new("Add detached plot"))
-                        .clicked()
-                    {
-                        self.add_layout_popout();
-                    }
-                    if ui.button("Tile").clicked() {
-                        self.tile_layout();
-                    }
-                    ui.label("Columns:");
-                    ui.add(egui::DragValue::new(&mut self.layout_columns).range(1..=4));
-                    if ui.button("Bring to front").clicked() {
-                        if let Some(i) = self.layout_selected {
-                            if i < self.layout_panels.len() {
-                                let p = self.layout_panels.remove(i);
-                                self.layout_panels.push(p);
-                                self.layout_selected = Some(self.layout_panels.len() - 1);
+                card_frame(p).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, p, "Add current plot").clicked() {
+                            self.add_layout_current();
+                        }
+                        let popout_open = self.popout.open;
+                        if ui
+                            .add_enabled(
+                                popout_open,
+                                egui::Button::new(
+                                    egui::RichText::new("Add detached plot")
+                                        .small()
+                                        .color(p.ink),
+                                )
+                                .fill(p.soft)
+                                .stroke(egui::Stroke::new(1.0, p.border))
+                                .rounding(6.0),
+                            )
+                            .clicked()
+                        {
+                            self.add_layout_popout();
+                        }
+                        if secondary_button(ui, p, "Tile").clicked() {
+                            self.tile_layout();
+                        }
+                        ui.label(egui::RichText::new("Columns:").small().color(p.muted));
+                        ui.add(
+                            egui::DragValue::new(&mut self.layout_columns).range(1..=4),
+                        );
+                        if secondary_button(ui, p, "Bring to front").clicked() {
+                            if let Some(i) = self.layout_selected {
+                                if i < self.layout_panels.len() {
+                                    let p = self.layout_panels.remove(i);
+                                    self.layout_panels.push(p);
+                                    self.layout_selected = Some(self.layout_panels.len() - 1);
+                                }
                             }
                         }
-                    }
-                    if ui.button("Delete").clicked() {
-                        if let Some(i) = self.layout_selected {
-                            if i < self.layout_panels.len() {
-                                self.layout_panels.remove(i);
+                        if secondary_button(ui, p, "Delete").clicked() {
+                            if let Some(i) = self.layout_selected {
+                                if i < self.layout_panels.len() {
+                                    self.layout_panels.remove(i);
+                                }
+                                self.layout_selected = None;
                             }
+                        }
+                        if secondary_button(ui, p, "Clear").clicked() {
+                            self.layout_panels.clear();
+                            self.layout_selected = None;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Export:").small().color(p.muted));
+                        if secondary_button(ui, p, "SVG…").clicked() {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("SVG", &["svg"])
+                                .set_file_name("layout.svg")
+                                .save_file()
+                            {
+                                self.export_layout(&path);
+                            }
+                        }
+                        if secondary_button(ui, p, "Image…").clicked() {
+                            let mut dlg = rfd::FileDialog::new().set_file_name("layout.png");
+                            for &(name, exts) in ImageFormat::dialog_filters() {
+                                dlg = dlg.add_filter(name, exts);
+                            }
+                            if let Some(path) = dlg.save_file() {
+                                self.export_layout_image(&path);
+                            }
+                        }
+                        ui.label(egui::RichText::new("scale:").small().color(p.muted));
+                        ui.add(
+                            egui::DragValue::new(&mut self.export_scale)
+                                .range(1.0..=4.0)
+                                .speed(0.1),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "Tip: drag a panel to move it; drag its corner handle to resize.",
+                            )
+                            .small()
+                            .color(p.muted),
+                        );
+                    });
+                    ui.separator();
+
+                    egui::ScrollArea::both().show(ui, |ui| {
+                        self.layout_canvas(ui, p);
+                    });
+
+                    // Per-axis label styling for the selected panel.
+                    if let Some(i) = self.layout_selected {
+                        if let Some(panel) = self.layout_panels.get_mut(i) {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("Axis label style (selected panel)")
+                                    .strong()
+                                    .color(p.ink),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("X text:").small().color(p.muted));
+                                label_text_edit(ui, "lx_text", &mut panel.x_label);
+                                ui.label(egui::RichText::new("size:").small().color(p.muted));
+                                ui.add(
+                                    egui::DragValue::new(&mut panel.x_label.size)
+                                        .range(4.0..=72.0)
+                                        .speed(0.5),
+                                );
+                                ui.label(egui::RichText::new("rotate:").small().color(p.muted));
+                                ui.add(
+                                    egui::DragValue::new(&mut panel.x_label.rotation_deg)
+                                        .range(-180.0..=180.0)
+                                        .suffix("°"),
+                                );
+                                label_font_combo(ui, "lx_font", &mut panel.x_label.font);
+                                ui.color_edit_button_srgba(&mut panel.x_label.color);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Y text:").small().color(p.muted));
+                                label_text_edit(ui, "ly_text", &mut panel.y_label);
+                                ui.label(egui::RichText::new("size:").small().color(p.muted));
+                                ui.add(
+                                    egui::DragValue::new(&mut panel.y_label.size)
+                                        .range(4.0..=72.0)
+                                        .speed(0.5),
+                                );
+                                ui.label(egui::RichText::new("rotate:").small().color(p.muted));
+                                ui.add(
+                                    egui::DragValue::new(&mut panel.y_label.rotation_deg)
+                                        .range(-180.0..=180.0)
+                                        .suffix("°"),
+                                );
+                                label_font_combo(ui, "ly_font", &mut panel.y_label.font);
+                                ui.color_edit_button_srgba(&mut panel.y_label.color);
+                            });
+                            ui.weak(
+                                egui::RichText::new(
+                                    "Leave a text box blank to use the parameter name. The (linear)/(log) suffix is kept.",
+                                )
+                                .color(p.muted),
+                            );
+
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new("Plot title style (selected panel)")
+                                    .strong()
+                                    .color(p.ink),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Title text:").small().color(p.muted));
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut panel.title)
+                                        .id_salt("layout_panel_title")
+                                        .hint_text("Plot title")
+                                        .desired_width(140.0),
+                                );
+                                ui.label(egui::RichText::new("size:").small().color(p.muted));
+                                ui.add(egui::Slider::new(&mut panel.title_size, 4.0..=72.0));
+                            });
+                            ui.weak(
+                                egui::RichText::new(
+                                    "Leave the title text blank to use the default title.",
+                                )
+                                .color(p.muted),
+                            );
+                        }
+                    }
+
+                    // Per-panel quick list (select / remove).
+                    ui.separator();
+                    let mut remove: Option<usize> = None;
+                    for (i, panel) in self.layout_panels.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let name = self
+                                .samples
+                                .get(panel.sample)
+                                .map(|s| s.id.clone())
+                                .unwrap_or_else(|| "?".into());
+                            let label = format!(
+                                "{}. {} — {} vs {} ({})",
+                                i + 1,
+                                name,
+                                param_display_name(&self.samples[panel.sample].fcs, panel.x),
+                                param_display_name(&self.samples[panel.sample].fcs, panel.y),
+                                panel.view.label()
+                            );
+                            if ui
+                                .selectable_label(self.layout_selected == Some(i), label)
+                                .clicked()
+                            {
+                                self.layout_selected = Some(i);
+                            }
+                            if secondary_button(ui, p, "✖").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        self.layout_panels.remove(i);
+                        if self.layout_selected == Some(i) {
                             self.layout_selected = None;
                         }
                     }
-                    if ui.button("Clear").clicked() {
-                        self.layout_panels.clear();
-                        self.layout_selected = None;
-                    }
                 });
-                ui.horizontal(|ui| {
-                    ui.label("Export:");
-                    if ui.button("SVG…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("SVG", &["svg"])
-                            .set_file_name("layout.svg")
-                            .save_file()
-                        {
-                            self.export_layout(&path);
-                        }
-                    }
-                    if ui.button("Image…").clicked() {
-                        let mut dlg = rfd::FileDialog::new().set_file_name("layout.png");
-                        for &(name, exts) in ImageFormat::dialog_filters() {
-                            dlg = dlg.add_filter(name, exts);
-                        }
-                        if let Some(path) = dlg.save_file() {
-                            self.export_layout_image(&path);
-                        }
-                    }
-                    ui.label("scale:");
-                    ui.add(
-                        egui::DragValue::new(&mut self.export_scale)
-                            .range(1.0..=4.0)
-                            .speed(0.1),
-                    );
-                    ui.label("Tip: drag a panel to move it; drag its corner handle to resize.");
-                });
-                ui.separator();
-
-                egui::ScrollArea::both().show(ui, |ui| {
-                    self.layout_canvas(ui);
-                });
-
-                // Per-axis label styling for the selected panel.
-                if let Some(i) = self.layout_selected {
-                    if let Some(panel) = self.layout_panels.get_mut(i) {
-                        ui.separator();
-                        ui.strong("Axis label style (selected panel)");
-                        ui.horizontal(|ui| {
-                            ui.label("X text:");
-                            label_text_edit(ui, "lx_text", &mut panel.x_label);
-                            ui.label("size:");
-                            ui.add(
-                                egui::DragValue::new(&mut panel.x_label.size)
-                                    .range(4.0..=72.0)
-                                    .speed(0.5),
-                            );
-                            ui.label("rotate:");
-                            ui.add(
-                                egui::DragValue::new(&mut panel.x_label.rotation_deg)
-                                    .range(-180.0..=180.0)
-                                    .suffix("°"),
-                            );
-                            label_font_combo(ui, "lx_font", &mut panel.x_label.font);
-                            ui.color_edit_button_srgba(&mut panel.x_label.color);
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Y text:");
-                            label_text_edit(ui, "ly_text", &mut panel.y_label);
-                            ui.label("size:");
-                            ui.add(
-                                egui::DragValue::new(&mut panel.y_label.size)
-                                    .range(4.0..=72.0)
-                                    .speed(0.5),
-                            );
-                            ui.label("rotate:");
-                            ui.add(
-                                egui::DragValue::new(&mut panel.y_label.rotation_deg)
-                                    .range(-180.0..=180.0)
-                                    .suffix("°"),
-                            );
-                            label_font_combo(ui, "ly_font", &mut panel.y_label.font);
-                            ui.color_edit_button_srgba(&mut panel.y_label.color);
-                        });
-                        ui.weak(
-                            "Leave a text box blank to use the parameter name. The (linear)/(log) suffix is kept.",
-                        );
-
-                        ui.separator();
-                        ui.strong("Plot title style (selected panel)");
-                        ui.horizontal(|ui| {
-                            ui.label("Title text:");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut panel.title)
-                                    .id_salt("layout_panel_title")
-                                    .hint_text("Plot title")
-                                    .desired_width(140.0),
-                            );
-                            ui.label("size:");
-                            ui.add(egui::Slider::new(&mut panel.title_size, 4.0..=72.0));
-                        });
-                        ui.weak("Leave the title text blank to use the default title.");
-                    }
-                }
-
-                // Per-panel quick list (select / remove).
-                ui.separator();
-                let mut remove: Option<usize> = None;
-                for (i, panel) in self.layout_panels.iter().enumerate() {
-                    ui.horizontal(|ui| {
-                        let name = self
-                            .samples
-                            .get(panel.sample)
-                            .map(|s| s.id.clone())
-                            .unwrap_or_else(|| "?".into());
-                        let label = format!(
-                            "{}. {} — {} vs {} ({})",
-                            i + 1,
-                            name,
-                            param_display_name(&self.samples[panel.sample].fcs, panel.x),
-                            param_display_name(&self.samples[panel.sample].fcs, panel.y),
-                            panel.view.label()
-                        );
-                        if ui
-                            .selectable_label(self.layout_selected == Some(i), label)
-                            .clicked()
-                        {
-                            self.layout_selected = Some(i);
-                        }
-                        if ui.small_button("✖").clicked() {
-                            remove = Some(i);
-                        }
-                    });
-                }
-                if let Some(i) = remove {
-                    self.layout_panels.remove(i);
-                    if self.layout_selected == Some(i) {
-                        self.layout_selected = None;
-                    }
-                }
             });
         self.layout_open = open;
     }
@@ -4244,198 +4475,298 @@ impl eframe::App for FlowersApp {
             }
         }
 
-        // ----- Top menu -----
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
-            egui::menu::bar(ui, |ui| {
-                // File dropdown.
-                ui.menu_button("File", |ui| {
-                    if ui.button("Load FCS").clicked() {
-                        ui.close_menu();
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
-                            self.load_file(&path);
+        // ----- Top header: brand + menu bar -----
+        let p = self.palette();
+        egui::TopBottomPanel::top("header")
+            .frame(egui::Frame::none().fill(p.bg).inner_margin(egui::Margin::same(6.0)))
+            .show(ctx, |ui| {
+                header_bar(ui, p, |ui| {
+                    // File dropdown.
+                    ui.menu_button("File", |ui| {
+                        if ui.button("Load FCS").clicked() {
+                            ui.close_menu();
+                            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                self.load_file(&path);
+                            }
                         }
-                    }
-                    ui.separator();
-                    if ui.button("New Workspace").clicked() {
-                        ui.close_menu();
-                        self.new_workspace();
-                    }
-                    if ui.button("Load Workspace…").clicked() {
-                        ui.close_menu();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Flowers workspace", &["wsp", "json"])
-                            .pick_file()
-                        {
-                            self.load_workspace(&path);
+                        ui.separator();
+                        if ui.button("New Workspace").clicked() {
+                            ui.close_menu();
+                            self.new_workspace();
                         }
-                    }
-                    if ui.button("Save Workspace…").clicked() {
-                        ui.close_menu();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("Flowers workspace", &["wsp", "json"])
-                            .set_file_name("workspace.wsp")
-                            .save_file()
-                        {
-                            self.save_workspace(&path);
+                        if ui.button("Load Workspace…").clicked() {
+                            ui.close_menu();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Flowers workspace", &["wsp", "json"])
+                                .pick_file()
+                            {
+                                self.load_workspace(&path);
+                            }
                         }
-                    }
-                    ui.separator();
-                    if ui.button("Export SVG").clicked() {
-                        ui.close_menu();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("SVG", &["svg"])
-                            .set_file_name("plot.svg")
-                            .save_file()
-                        {
-                            self.export_svg(&path);
+                        if ui.button("Save Workspace…").clicked() {
+                            ui.close_menu();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Flowers workspace", &["wsp", "json"])
+                                .set_file_name("workspace.wsp")
+                                .save_file()
+                            {
+                                self.save_workspace(&path);
+                            }
                         }
-                    }
-                    if ui.button("Export Image…").clicked() {
-                        ui.close_menu();
-                        let mut dlg = rfd::FileDialog::new().set_file_name("plot.png");
-                        for &(name, exts) in ImageFormat::dialog_filters() {
-                            dlg = dlg.add_filter(name, exts);
+                        ui.separator();
+                        if ui.button("Export SVG").clicked() {
+                            ui.close_menu();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("SVG", &["svg"])
+                                .set_file_name("plot.svg")
+                                .save_file()
+                            {
+                                self.export_svg(&path);
+                            }
                         }
-                        if let Some(path) = dlg.save_file() {
-                            self.export_image(&path);
+                        if ui.button("Export Image…").clicked() {
+                            ui.close_menu();
+                            let mut dlg = rfd::FileDialog::new().set_file_name("plot.png");
+                            for &(name, exts) in ImageFormat::dialog_filters() {
+                                dlg = dlg.add_filter(name, exts);
+                            }
+                            if let Some(path) = dlg.save_file() {
+                                self.export_image(&path);
+                            }
                         }
-                    }
-                    if ui.button("Export CSV").clicked() {
-                        ui.close_menu();
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("CSV", &["csv"])
-                            .set_file_name("populations.csv")
-                            .save_file()
-                        {
-                            self.export_csv(&path);
+                        if ui.button("Export CSV").clicked() {
+                            ui.close_menu();
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("CSV", &["csv"])
+                                .set_file_name("populations.csv")
+                                .save_file()
+                            {
+                                self.export_csv(&path);
+                            }
                         }
-                    }
-                    ui.separator();
-                    if ui.button("Quit").clicked() {
-                        ui.close_menu();
-                        if self.dirty {
-                            self.quit_confirm = true;
-                        } else {
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        ui.separator();
+                        if ui.button("Quit").clicked() {
+                            ui.close_menu();
+                            if self.dirty {
+                                self.quit_confirm = true;
+                            } else {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
                         }
-                    }
-                });
+                    });
 
-                // Edit dropdown (undo / redo).
-                ui.menu_button("Edit", |ui| {
-                    let undo_shortcut = egui::KeyboardShortcut::new(
-                        egui::Modifiers::COMMAND,
-                        egui::Key::Z,
-                    );
-                    let redo_shortcut = egui::KeyboardShortcut::new(
-                        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                        egui::Key::Z,
-                    );
-                    if ui
-                        .add_enabled(
-                            self.can_undo(),
-                            egui::Button::new("Undo").shortcut_text(
-                                ui.ctx().format_shortcut(&undo_shortcut),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        ui.close_menu();
-                        self.undo();
-                    }
-                    if ui
-                        .add_enabled(
-                            self.can_redo(),
-                            egui::Button::new("Redo").shortcut_text(
-                                ui.ctx().format_shortcut(&redo_shortcut),
-                            ),
-                        )
-                        .clicked()
-                    {
-                        ui.close_menu();
-                        self.redo();
-                    }
-                });
-
-                // Layout Editor (standalone button).
-                if ui.button("Layout Editor").clicked() {
-                    self.layout_open = true;
-                }
-
-                // Settings dropdown.
-                ui.menu_button("Settings", |ui| {
-                    ui.label("Theme:");
-                    for t in [Theme::Dark, Theme::Light] {
+                    // Edit dropdown (undo / redo).
+                    ui.menu_button("Edit", |ui| {
+                        let undo_shortcut = egui::KeyboardShortcut::new(
+                            egui::Modifiers::COMMAND,
+                            egui::Key::Z,
+                        );
+                        let redo_shortcut = egui::KeyboardShortcut::new(
+                            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                            egui::Key::Z,
+                        );
                         if ui
-                            .selectable_label(self.theme == t, t.label())
+                            .add_enabled(
+                                self.can_undo(),
+                                egui::Button::new("Undo").shortcut_text(
+                                    ui.ctx().format_shortcut(&undo_shortcut),
+                                ),
+                            )
                             .clicked()
                         {
                             ui.close_menu();
-                            self.theme = t;
+                            self.undo();
                         }
+                        if ui
+                            .add_enabled(
+                                self.can_redo(),
+                                egui::Button::new("Redo").shortcut_text(
+                                    ui.ctx().format_shortcut(&redo_shortcut),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            ui.close_menu();
+                            self.redo();
+                        }
+                    });
+
+                    // Layout Editor (standalone button).
+                    if ui.button("Layout Editor").clicked() {
+                        self.layout_open = true;
                     }
+
+                    // Settings dropdown.
+                    ui.menu_button("Settings", |ui| {
+                        ui.label("Theme:");
+                        for t in [Theme::Dark, Theme::Light] {
+                            if ui
+                                .selectable_label(self.theme == t, t.label())
+                                .clicked()
+                            {
+                                ui.close_menu();
+                                self.theme = t;
+                            }
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label("flowers — flow cytometry analysis");
                 });
-
-                ui.separator();
-                ui.label("flowers — flow cytometry analysis");
             });
-        });
 
-        // ----- Left sidebar -----
+        // ----- Left sidebar: Samples card + Gates card + Controls card -----
+        let p = self.palette();
         egui::SidePanel::left("sidebar")
-            .default_width(260.0)
+            .default_width(280.0)
             .show(ctx, |ui| {
-                ui.heading("flowers");
-                ui.separator();
+                // --- Samples card ---
+                card_frame(p).show(ui, |ui| {
+                    card_head(ui, p, "Samples", |ui| {
+                        ui.label(
+                            egui::RichText::new(self.samples.len().to_string())
+                                .small()
+                                .color(p.muted),
+                        );
+                    });
+                    section_label(ui, p, "FCS files in this workspace");
+                    ui.add_space(6.0);
 
-                ui.horizontal(|ui| {
-                    if ui.button("Load FCS File").clicked() {
+                    // Import button.
+                    if primary_button(ui, p, "Import FCS").clicked() {
                         if let Some(path) = rfd::FileDialog::new().pick_file() {
                             self.load_file(&path);
                         }
                     }
+                    ui.add_space(8.0);
+
+                    // Sample list.
+                    let mut clicked_sample: Option<usize> = None;
+                    let mut toggled_gates: Option<(usize, bool)> = None;
+                    for (i, sample) in self.samples.iter().enumerate() {
+                        let selected = self.current_sample == Some(i);
+                        let id = sample.id.clone();
+                        let mut apply = sample.apply_gates;
+                        let row_fill = if selected {
+                            p.teal_light
+                        } else {
+                            p.soft
+                        };
+                        let row_stroke = if selected {
+                            egui::Stroke::new(1.0, p.teal)
+                        } else {
+                            egui::Stroke::new(1.0, p.border)
+                        };
+                        egui::Frame::none()
+                            .fill(row_fill)
+                            .stroke(row_stroke)
+                            .rounding(6.0)
+                            .inner_margin(egui::Margin::same(4.0))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .selectable_label(selected, &id)
+                                        .clicked()
+                                    {
+                                        clicked_sample = Some(i);
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui
+                                                .checkbox(&mut apply, "")
+                                                .on_hover_text(
+                                                    "Apply the shared gate set to this file",
+                                                )
+                                                .changed()
+                                            {
+                                                toggled_gates = Some((i, apply));
+                                            }
+                                        },
+                                    );
+                                });
+                            });
+                    }
+                    if let Some(i) = clicked_sample {
+                        self.current_sample = Some(i);
+                        self.update_plot_points();
+                    }
+                    if let Some((i, apply)) = toggled_gates {
+                        if let Some(s) = self.samples.get_mut(i) {
+                            s.apply_gates = apply;
+                        }
+                        self.recompute_populations();
+                    }
+                    if self.samples.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("(none)").color(p.muted).small(),
+                        );
+                    }
+                    ui.add_space(8.0);
+                    section_label(
+                        ui,
+                        p,
+                        "Click a sample to make it active. New gates apply to all samples.",
+                    );
                 });
 
-                ui.separator();
-                ui.label("Loaded samples:");
-                let mut clicked_sample: Option<usize> = None;
-                let mut toggled_gates: Option<(usize, bool)> = None;
-                for (i, sample) in self.samples.iter().enumerate() {
-                    let selected = self.current_sample == Some(i);
-                    let id = sample.id.clone();
-                    let mut apply = sample.apply_gates;
-                    ui.horizontal(|ui| {
-                        if ui.selectable_label(selected, &id).clicked() {
-                            clicked_sample = Some(i);
-                        }
-                        if ui
-                            .checkbox(&mut apply, "gates")
-                            .on_hover_text("Apply the shared gate set to this file")
-                            .changed()
-                        {
-                            toggled_gates = Some((i, apply));
-                        }
-                    });
-                }
-                if let Some(i) = clicked_sample {
-                    self.current_sample = Some(i);
-                    self.update_plot_points();
-                }
-                if let Some((i, apply)) = toggled_gates {
-                    if let Some(s) = self.samples.get_mut(i) {
-                        s.apply_gates = apply;
-                    }
-                    self.recompute_populations();
-                }
-                if self.samples.is_empty() {
-                    ui.weak("(none)");
-                }
+                ui.add_space(12.0);
 
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    ui.separator();
-                    ui.label("Plot parameters:");
+                // --- Gates card ---
+                card_frame(p).show(ui, |ui| {
+                    card_head(ui, p, "Gates", |ui| {
+                        ui.label(
+                            egui::RichText::new(self.gates.len().to_string())
+                                .small()
+                                .color(p.muted),
+                        );
+                    });
+                    section_label(ui, p, "Click a population to work inside it");
+                    ui.add_space(6.0);
+
+                    let total = self.current_fcs().map(|f| f.event_count).unwrap_or(0);
+                    let counts: Vec<usize> = self.pop_indices.iter().map(|v| v.len()).collect();
+                    let actions = gate_tree_ui(
+                        ui,
+                        &self.gates,
+                        &self.children,
+                        &counts,
+                        total,
+                        self.selected_gate,
+                    );
+                    for action in actions {
+                        match action {
+                            TreeAction::Select(i) => {
+                                self.selected_gate = Some(i);
+                                self.sync_name_edit();
+                            }
+                            TreeAction::Remove(i) => self.remove_gate(i),
+                            TreeAction::Popout(i) => {
+                                self.open_popout(i);
+                            }
+                        }
+                    }
+                    if self.gates.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("No gates yet — draw one on the plot.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                    }
+                });
+
+                ui.add_space(12.0);
+
+                // --- Controls card (plot parameters + gating) ---
+                card_frame(p).show(ui, |ui| {
+                    card_head(ui, p, "Controls", |_| {});
+                    section_label(ui, p, "Plot parameters & gating");
+                    ui.add_space(6.0);
+
                     let Some(fcs) = self.current_fcs() else {
-                        ui.weak("No sample selected");
+                        ui.label(egui::RichText::new("No sample selected").color(p.muted).small());
                         return;
                     };
                     let names: Vec<String> = (0..fcs.parameters.len())
@@ -4477,10 +4808,17 @@ impl eframe::App for FlowersApp {
                         });
 
                     if self.x_param.is_some() && self.y_param.is_some() {
-                        ui.label(format!("Events: {events}"));
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(format!("Events: {events}"))
+                                .small()
+                                .color(p.muted),
+                        );
                     }
 
+                    ui.add_space(6.0);
                     ui.separator();
+                    ui.add_space(4.0);
                     ui.collapsing("Axis options", |ui| {
                         // X axis.
                         ui.horizontal(|ui| {
@@ -4500,7 +4838,11 @@ impl eframe::App for FlowersApp {
                             let span = (self.x_range.1 - self.x_range.0).abs().max(1.0);
                             ui.add(range_drag_value(&mut self.x_range.0, span));
                             ui.add(range_drag_value(&mut self.x_range.1, span));
-                            if ui.small_button("Auto").on_hover_text("Fit X to data").clicked() {
+                            if ui
+                                .small_button("Auto")
+                                .on_hover_text("Fit X to data")
+                                .clicked()
+                            {
                                 self.auto_x();
                             }
                         });
@@ -4521,7 +4863,11 @@ impl eframe::App for FlowersApp {
                             let span = (self.y_range.1 - self.y_range.0).abs().max(1.0);
                             ui.add(range_drag_value(&mut self.y_range.0, span));
                             ui.add(range_drag_value(&mut self.y_range.1, span));
-                            if ui.small_button("Auto").on_hover_text("Fit Y to data").clicked() {
+                            if ui
+                                .small_button("Auto")
+                                .on_hover_text("Fit Y to data")
+                                .clicked()
+                            {
                                 self.auto_y();
                             }
                         });
@@ -4552,33 +4898,71 @@ impl eframe::App for FlowersApp {
                         }
                     });
 
+                    ui.add_space(6.0);
                     ui.separator();
-                    ui.label("New gate type:");
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new("New gate type").small().color(p.muted),
+                    );
                     for gt in NewGateType::ALL {
                         ui.radio_value(&mut self.new_gate_type, gt, gt.label());
                     }
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
-                        if ui.button("+ Add Gate").clicked() {
+                        if primary_button(ui, p, "+ Add Gate").clicked() {
                             self.add_default_gate();
                         }
-                        if ui.button("Remove selected").clicked() {
+                        if secondary_button(ui, p, "Remove selected").clicked() {
                             if let Some(i) = self.selected_gate {
                                 self.remove_gate(i);
                             }
                         }
                     });
-                    ui.label("Tip: drag on the plot to draw; click places a quadrant/bilinear gate.");
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(
+                            "Tip: drag on the plot to draw; click places a quadrant/bilinear gate.",
+                        )
+                        .small()
+                        .color(p.muted),
+                    );
                 });
             });
 
-        // ----- Central panel -----
+        // ----- Central panel: plot card -----
+        let p = self.palette();
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.current_fcs().is_none() {
-                ui.centered_and_justified(|ui| ui.label("Load an FCS file to begin"));
+                card_frame(p).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Load an FCS file to begin")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new("Use File ▸ Load FCS, or click Import FCS on the left.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        ui.add_space(8.0);
+                    });
+                });
                 return;
             }
             if self.x_param.is_none() || self.y_param.is_none() {
-                ui.centered_and_justified(|ui| ui.label("Select X and Y parameters to plot"));
+                card_frame(p).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Select X and Y parameters to plot")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        ui.add_space(8.0);
+                    });
+                });
                 return;
             }
             if self.plot_points.is_empty() {
@@ -4586,355 +4970,730 @@ impl eframe::App for FlowersApp {
             }
 
             let cfg = self.main_plot_cfg();
-            egui::ScrollArea::both().show(ui, |ui| {
-                let mut inter = PlotInteraction {
-                    drag_start: self.interact.drag_start,
-                    drag_current: self.interact.drag_current,
-                    ..Default::default()
-                };
-                show_plot(ui, "scatter_plot", &cfg, &mut inter);
 
-                let tol = 0.02
-                    * (self.x_range.1 - self.x_range.0)
-                        .abs()
-                        .max((self.y_range.1 - self.y_range.0).abs())
-                        .max(1.0);
-                let outcome = drive_interact(
-                    &mut self.interact,
-                    &inter,
-                    &self.gates,
-                    self.selected_gate,
-                    self.new_gate_type,
-                    tol,
-                );
-                if let Some(outcome) = outcome {
-                    match outcome {
-                        InteractOutcome::Create { start, end } => {
-                            self.create_gate_from_drag(start, end)
-                        }
-                        InteractOutcome::Update { gate, kind } => {
-                            if let Some(g) = self.gates.get_mut(gate) {
-                                g.kind = kind;
+            card_frame(p).show(ui, |ui| {
+                // --- Plot header: title + tools ---
+                let sample_name = self
+                    .current_sample
+                    .and_then(|i| self.samples.get(i))
+                    .map(|s| s.id.clone())
+                    .unwrap_or_default();
+                let comp_status = if self.gates.is_empty() {
+                    "no gates".to_string()
+                } else {
+                    format!("{} gate(s)", self.gates.len())
+                };
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(&sample_name)
+                                .strong()
+                                .color(p.ink),
+                        );
+                        ui.label(
+                            egui::RichText::new(comp_status)
+                                .small()
+                                .color(p.muted),
+                        );
+                    });
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            // Save plot (rightmost).
+                            if secondary_button(ui, p, "Save PNG").clicked() {
+                                let mut dlg = rfd::FileDialog::new().set_file_name("plot.png");
+                                for &(name, exts) in ImageFormat::dialog_filters() {
+                                    dlg = dlg.add_filter(name, exts);
+                                }
+                                if let Some(path) = dlg.save_file() {
+                                    self.export_image(&path);
+                                }
                             }
-                            self.recompute_populations();
-                        }
-                        InteractOutcome::Click(p) => {
-                            self.create_click_gate(p, false)
+                            ui.add_space(6.0);
+                            // Clear / finish.
+                            if secondary_button(ui, p, "Clear").clicked() {
+                                // Cancel any in-progress draw.
+                                self.interact.drag_start = None;
+                                self.interact.drag_current = None;
+                            }
+                            ui.add_space(6.0);
+                            // Tool toggle group: select / rectangle / polygon.
+                            egui::Frame::none()
+                                .fill(p.soft)
+                                .stroke(egui::Stroke::new(1.0, p.border))
+                                .rounding(6.0)
+                                .inner_margin(egui::Margin::same(2.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let rect_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Rect | NewGateType::Ellipse
+                                        );
+                                        let poly_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Polygon
+                                        );
+                                        let quad_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Quadrant
+                                        );
+                                        let line_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Bilinear
+                                        );
+                                        if tool_button(
+                                            ui,
+                                            p,
+                                            "Rectangle",
+                                            rect_active && !poly_active && !quad_active && !line_active,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Rect;
+                                        }
+                                        if tool_button(
+                                            ui,
+                                            p,
+                                            "Ellipse",
+                                            matches!(self.new_gate_type, NewGateType::Ellipse)
+                                                && !poly_active && !quad_active && !line_active,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Ellipse;
+                                        }
+                                        if tool_button(ui, p, "Polygon", poly_active)
+                                            .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Polygon;
+                                        }
+                                        if tool_button(ui, p, "Quadrant", quad_active)
+                                            .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Quadrant;
+                                        }
+                                        if tool_button(ui, p, "Bilinear", line_active)
+                                            .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Bilinear;
+                                        }
+                                    });
+                                });
+                        },
+                    );
+                });
+                ui.add_space(8.0);
+
+                // --- Plot area ---
+                egui::ScrollArea::both().show(ui, |ui| {
+                    let mut inter = PlotInteraction {
+                        drag_start: self.interact.drag_start,
+                        drag_current: self.interact.drag_current,
+                        ..Default::default()
+                    };
+                    show_plot(ui, "scatter_plot", &cfg, &mut inter);
+
+                    let tol = 0.02
+                        * (self.x_range.1 - self.x_range.0)
+                            .abs()
+                            .max((self.y_range.1 - self.y_range.0).abs())
+                            .max(1.0);
+                    let outcome = drive_interact(
+                        &mut self.interact,
+                        &inter,
+                        &self.gates,
+                        self.selected_gate,
+                        self.new_gate_type,
+                        tol,
+                    );
+                    if let Some(outcome) = outcome {
+                        match outcome {
+                            InteractOutcome::Create { start, end } => {
+                                self.create_gate_from_drag(start, end)
+                            }
+                            InteractOutcome::Update { gate, kind } => {
+                                if let Some(g) = self.gates.get_mut(gate) {
+                                    g.kind = kind;
+                                }
+                                self.recompute_populations();
+                            }
+                            InteractOutcome::Click(p) => {
+                                self.create_click_gate(p, false)
+                            }
                         }
                     }
-                }
+                });
+                ui.add_space(8.0);
+
+                // --- Plot footer: hints + options ---
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Draw hints")
+                            .small()
+                            .color(p.muted),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("drag").small().strong().color(p.ink));
+                    ui.label(" to draw a gate  ");
+                    ui.label(egui::RichText::new("click").small().strong().color(p.ink));
+                    ui.label(" to place a quadrant/bilinear gate  ");
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.checkbox(
+                                &mut self.gradient,
+                                egui::RichText::new("density gradient").small().color(p.muted),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    self.pop_indices
+                                        .iter()
+                                        .map(|v| v.len())
+                                        .sum::<usize>()
+                                        .to_string(),
+                                )
+                                .small()
+                                .color(p.muted),
+                            );
+                            ui.label(" events drawn");
+                        },
+                    );
+                });
             });
         });
 
         // ----- Bottom panel: gate editor -----
+        let p = self.palette();
         egui::TopBottomPanel::bottom("gate_editor")
             .resizable(true)
-            .default_height(180.0)
+            .default_height(200.0)
             .show(ctx, |ui| {
                 let sel = self.selected_gate;
-                ui.horizontal(|ui| {
-                    ui.label("Selected gate:");
-                    if let Some(i) = sel {
-                        ui.text_edit_singleline(&mut self.name_edit);
-                        if ui.button("Rename").clicked() {
-                            self.gates[i].name = self.name_edit.clone();
-                        }
-                        let mut color = self.gates[i].color;
-                        if ui.color_edit_button_srgba(&mut color).changed() {
-                            self.gates[i].color = color;
-                        }
-                        ui.separator();
-                        // Parent selector: only earlier gates are offered, which
-                        // keeps the hierarchy acyclic and topologically ordered.
-                        let current = self.gates[i].parent;
-                        let current_label = current
-                            .map(|p| self.gates[p].name.clone())
-                            .unwrap_or_else(|| "(root)".to_string());
-                        let options: Vec<(usize, String)> =
-                            (0..i).map(|p| (p, self.gates[p].name.clone())).collect();
-                        let mut new_parent = current;
-                        egui::ComboBox::new("parent_sel", "Parent")
-                            .selected_text(current_label)
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut new_parent, None, "(root)");
-                                for (p, name) in &options {
-                                    ui.selectable_value(&mut new_parent, Some(*p), name.clone());
+                card_frame(p).show(ui, |ui| {
+                    card_head(ui, p, "Gate editor", |_| {});
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Selected gate:")
+                                .small()
+                                .color(p.muted),
+                        );
+                        if let Some(i) = sel {
+                            ui.text_edit_singleline(&mut self.name_edit);
+                            if secondary_button(ui, p, "Rename").clicked() {
+                                self.gates[i].name = self.name_edit.clone();
+                            }
+                            let mut color = self.gates[i].color;
+                            if ui.color_edit_button_srgba(&mut color).changed() {
+                                self.gates[i].color = color;
+                            }
+                            ui.separator();
+                            // Parent selector: only earlier gates are offered, which
+                            // keeps the hierarchy acyclic and topologically ordered.
+                            let current = self.gates[i].parent;
+                            let current_label = current
+                                .map(|p| self.gates[p].name.clone())
+                                .unwrap_or_else(|| "(root)".to_string());
+                            let options: Vec<(usize, String)> =
+                                (0..i).map(|p| (p, self.gates[p].name.clone())).collect();
+                            let mut new_parent = current;
+                            egui::ComboBox::new("parent_sel", "Parent")
+                                .selected_text(current_label)
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut new_parent, None, "(root)");
+                                    for (p, name) in &options {
+                                        ui.selectable_value(&mut new_parent, Some(*p), name.clone());
+                                    }
+                                });
+                            if new_parent != current {
+                                self.gates[i].parent = new_parent;
+                                self.recompute_populations();
+                            }
+                            // Apply-to-all toggle.
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Apply to all samples:")
+                                        .small()
+                                        .color(p.muted),
+                                );
+                                ui.checkbox(&mut self.gates[i].apply_to_all, "")
+                                    .on_hover_text(
+                                        "Off: this gate applies only to its owner sample. On: it also applies to every other sample that has gating enabled.",
+                                    );
+                                if let Some(owner_idx) = self.gates[i].owner {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "(created on sample {})",
+                                            self.samples[owner_idx].id
+                                        ))
+                                        .small()
+                                        .color(p.muted),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("(created before any sample loaded)")
+                                            .small()
+                                            .color(p.muted),
+                                    );
                                 }
                             });
-                        if new_parent != current {
-                            self.gates[i].parent = new_parent;
-                            self.recompute_populations();
+                        } else {
+                            ui.label(
+                                egui::RichText::new("none")
+                                    .small()
+                                    .color(p.muted),
+                            );
                         }
-                        // Apply-to-all toggle.
-                        ui.horizontal(|ui| {
-                            ui.label("Apply to all samples:");
-                            ui.checkbox(&mut self.gates[i].apply_to_all, "")
-                                .on_hover_text(
-                                    "Off: this gate applies only to its owner sample. On: it also applies to every other sample that has gating enabled (the \"gates\" checkbox in the sample list).",
+                    });
+
+                    let Some(i) = self.selected_gate else {
+                        ui.label(
+                            egui::RichText::new("No gate selected.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        return;
+                    };
+                    if i >= self.gates.len() {
+                        return;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    // Numeric editor for the selected gate.
+                    let mut new_kind = self.gates[i].kind.clone();
+                    let mut changed = false;
+                    match &mut new_kind {
+                        GateKind::Rect {
+                            x_min,
+                            x_max,
+                            y_min,
+                            y_max,
+                            angle,
+                        }
+                        | GateKind::Ellipse {
+                            x_min,
+                            x_max,
+                            y_min,
+                            y_max,
+                            angle,
+                        } => {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("X min:").small().color(p.muted),
                                 );
-                            if let Some(owner_idx) = self.gates[i].owner {
-                                ui.label(format!(
-                                    "(created on sample {})",
-                                    self.samples[owner_idx].id
-                                ));
-                            } else {
-                                ui.label("(created before any sample loaded)");
-                            }
-                        });
-                    } else {
-                        ui.label("none");
-                    }
-                });
-
-                let Some(i) = self.selected_gate else {
-                    ui.label("No gate selected.");
-                    return;
-                };
-                if i >= self.gates.len() {
-                    return;
-                }
-
-                // Numeric editor for the selected gate.
-                let mut new_kind = self.gates[i].kind.clone();
-                let mut changed = false;
-                match &mut new_kind {
-                    GateKind::Rect {
-                        x_min,
-                        x_max,
-                        y_min,
-                        y_max,
-                        angle,
-                    }
-                    | GateKind::Ellipse {
-                        x_min,
-                        x_max,
-                        y_min,
-                        y_max,
-                        angle,
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.label("X min:");
-                            changed |= ui.add(egui::DragValue::new(x_min).speed(1.0)).changed();
-                            ui.label("X max:");
-                            changed |= ui.add(egui::DragValue::new(x_max).speed(1.0)).changed();
-                            ui.label("Y min:");
-                            changed |= ui.add(egui::DragValue::new(y_min).speed(1.0)).changed();
-                            ui.label("Y max:");
-                            changed |= ui.add(egui::DragValue::new(y_max).speed(1.0)).changed();
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label("Rotation (deg):");
-                            let mut deg = angle.to_degrees();
-                            if ui.add(egui::DragValue::new(&mut deg).speed(1.0)).changed() {
-                                *angle = deg.to_radians();
-                                changed = true;
-                            }
-                        });
-                    }
-                    GateKind::Polygon { vertices } => {
-                        ui.label(format!(
-                            "{} vertices — drag a vertex handle on the plot to reshape.",
-                            vertices.len()
-                        ));
-                        ui.horizontal(|ui| {
-                            ui.label(format!(
-                                "Centroid: ({:.1}, {:.1})",
-                                centroid(vertices)[0],
-                                centroid(vertices)[1]
-                            ));
-                        });
-                        ui.horizontal(|ui| {
-                            if ui.button("+ Add vertex").clicked() {
-                                // Insert a new vertex at the midpoint of the longest edge.
-                                if vertices.len() >= 2 {
-                                    let mut best_edge = 0usize;
-                                    let mut best_len = f64::NEG_INFINITY;
-                                    for j in 0..vertices.len() {
-                                        let a = vertices[j];
-                                        let b = vertices[(j + 1) % vertices.len()];
-                                        let len = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
-                                        if len > best_len {
-                                            best_len = len;
-                                            best_edge = j;
+                                changed |= ui
+                                    .add(egui::DragValue::new(x_min).speed(1.0))
+                                    .changed();
+                                ui.label(
+                                    egui::RichText::new("X max:").small().color(p.muted),
+                                );
+                                changed |= ui
+                                    .add(egui::DragValue::new(x_max).speed(1.0))
+                                    .changed();
+                                ui.label(
+                                    egui::RichText::new("Y min:").small().color(p.muted),
+                                );
+                                changed |= ui
+                                    .add(egui::DragValue::new(y_min).speed(1.0))
+                                    .changed();
+                                ui.label(
+                                    egui::RichText::new("Y max:").small().color(p.muted),
+                                );
+                                changed |= ui
+                                    .add(egui::DragValue::new(y_max).speed(1.0))
+                                    .changed();
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Rotation (deg):")
+                                        .small()
+                                        .color(p.muted),
+                                );
+                                let mut deg = angle.to_degrees();
+                                if ui
+                                    .add(egui::DragValue::new(&mut deg).speed(1.0))
+                                    .changed()
+                                {
+                                    *angle = deg.to_radians();
+                                    changed = true;
+                                }
+                            });
+                        }
+                        GateKind::Polygon { vertices } => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} vertices — drag a vertex handle on the plot to reshape.",
+                                    vertices.len()
+                                ))
+                                .small()
+                                .color(p.muted),
+                            );
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "Centroid: ({:.1}, {:.1})",
+                                        centroid(vertices)[0],
+                                        centroid(vertices)[1]
+                                    ))
+                                    .small()
+                                    .color(p.muted),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                if secondary_button(ui, p, "+ Add vertex").clicked() {
+                                    // Insert a new vertex at the midpoint of the longest edge.
+                                    if vertices.len() >= 2 {
+                                        let mut best_edge = 0usize;
+                                        let mut best_len = f64::NEG_INFINITY;
+                                        for j in 0..vertices.len() {
+                                            let a = vertices[j];
+                                            let b = vertices[(j + 1) % vertices.len()];
+                                            let len =
+                                                ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2))
+                                                    .sqrt();
+                                            if len > best_len {
+                                                best_len = len;
+                                                best_edge = j;
+                                            }
                                         }
+                                        let a = vertices[best_edge];
+                                        let b = vertices[(best_edge + 1) % vertices.len()];
+                                        let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                                        vertices.insert(best_edge + 1, mid);
+                                        changed = true;
                                     }
-                                    let a = vertices[best_edge];
-                                    let b = vertices[(best_edge + 1) % vertices.len()];
-                                    let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
-                                    vertices.insert(best_edge + 1, mid);
-                                    changed = true;
                                 }
-                            }
-                            if ui.button("− Remove vertex").clicked() {
-                                if vertices.len() > 3 {
-                                    vertices.pop();
-                                    changed = true;
+                                if secondary_button(ui, p, "− Remove vertex").clicked() {
+                                    if vertices.len() > 3 {
+                                        vertices.pop();
+                                        changed = true;
+                                    }
                                 }
-                            }
-                            ui.label("Minimum 3 vertices.");
-                        });
+                                ui.label(
+                                    egui::RichText::new("Minimum 3 vertices.")
+                                        .small()
+                                        .color(p.muted),
+                                );
+                            });
+                        }
+                        GateKind::Quadrant { x, y, .. } => {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Split X:").small().color(p.muted),
+                                );
+                                changed |= ui.add(egui::DragValue::new(x).speed(1.0)).changed();
+                                ui.label(
+                                    egui::RichText::new("Split Y:").small().color(p.muted),
+                                );
+                                changed |= ui.add(egui::DragValue::new(y).speed(1.0)).changed();
+                            });
+                            ui.label(
+                                egui::RichText::new(
+                                    "Tip: all four quadrant gates share the same split point when drawn together.",
+                                )
+                                .small()
+                                .color(p.muted),
+                            );
+                        }
+                        GateKind::Bilinear {
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            below,
+                        } => {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new("Start X:").small().color(p.muted),
+                                );
+                                changed |= ui.add(egui::DragValue::new(x1).speed(1.0)).changed();
+                                ui.label(
+                                    egui::RichText::new("Start Y:").small().color(p.muted),
+                                );
+                                changed |= ui.add(egui::DragValue::new(y1).speed(1.0)).changed();
+                                ui.label(
+                                    egui::RichText::new("End X:").small().color(p.muted),
+                                );
+                                changed |= ui.add(egui::DragValue::new(x2).speed(1.0)).changed();
+                                ui.label(
+                                    egui::RichText::new("End Y:").small().color(p.muted),
+                                );
+                                changed |= ui.add(egui::DragValue::new(y2).speed(1.0)).changed();
+                            });
+                            ui.horizontal(|ui| {
+                                changed |= ui
+                                    .checkbox(below, "Select points below the line")
+                                    .changed();
+                                ui.label(
+                                    egui::RichText::new("(uncheck to select the region above)")
+                                        .small()
+                                        .color(p.muted),
+                                );
+                            });
+                        }
                     }
-                    GateKind::Quadrant { x, y, .. } => {
-                        ui.horizontal(|ui| {
-                            ui.label("Split X:");
-                            changed |= ui.add(egui::DragValue::new(x).speed(1.0)).changed();
-                            ui.label("Split Y:");
-                            changed |= ui.add(egui::DragValue::new(y).speed(1.0)).changed();
-                        });
-                        ui.label("Tip: all four quadrant gates share the same split point when drawn together.");
-                    }
-                    GateKind::Bilinear {
-                        x1,
-                        y1,
-                        x2,
-                        y2,
-                        below,
-                    } => {
-                        ui.horizontal(|ui| {
-                            ui.label("Start X:");
-                            changed |= ui.add(egui::DragValue::new(x1).speed(1.0)).changed();
-                            ui.label("Start Y:");
-                            changed |= ui.add(egui::DragValue::new(y1).speed(1.0)).changed();
-                            ui.label("End X:");
-                            changed |= ui.add(egui::DragValue::new(x2).speed(1.0)).changed();
-                            ui.label("End Y:");
-                            changed |= ui.add(egui::DragValue::new(y2).speed(1.0)).changed();
-                        });
-                        ui.horizontal(|ui| {
-                            changed |= ui
-                                .checkbox(below, "Select points below the line")
-                                .changed();
-                            ui.weak("(uncheck to select the region above)");
-                        });
-                    }
-                }
-                if changed {
-                    self.gates[i].kind = new_kind;
-                    self.recompute_populations();
-                }
-
-                // Non-interactive transform buttons (a reliable fallback to the
-                // drag handles drawn on the plot).
-                let step = (self.x_range.1 - self.x_range.0).abs().max(1.0) * 0.02;
-                ui.horizontal(|ui| {
-                    ui.label("Transform:");
-                    let mut t = false;
-                    if ui.small_button("⬅").on_hover_text("Move left").clicked() {
-                        self.gates[i].kind.translate(-step, 0.0);
-                        t = true;
-                    }
-                    if ui.small_button("➡").on_hover_text("Move right").clicked() {
-                        self.gates[i].kind.translate(step, 0.0);
-                        t = true;
-                    }
-                    if ui.small_button("⬆").on_hover_text("Move up").clicked() {
-                        self.gates[i].kind.translate(0.0, step);
-                        t = true;
-                    }
-                    if ui.small_button("⬇").on_hover_text("Move down").clicked() {
-                        self.gates[i].kind.translate(0.0, -step);
-                        t = true;
-                    }
-                    if ui.small_button("⟲").on_hover_text("Rotate -5°").clicked() {
-                        let c = self.gates[i].kind.center();
-                        self.gates[i].kind.rotate_about(c, (-5.0f64).to_radians());
-                        t = true;
-                    }
-                    if ui.small_button("⟳").on_hover_text("Rotate +5°").clicked() {
-                        let c = self.gates[i].kind.center();
-                        self.gates[i].kind.rotate_about(c, (5.0f64).to_radians());
-                        t = true;
-                    }
-                    if ui.small_button("➕").on_hover_text("Enlarge").clicked() {
-                        let c = self.gates[i].kind.center();
-                        self.gates[i].kind.scale_about(c, 1.1);
-                        t = true;
-                    }
-                    if ui.small_button("➖").on_hover_text("Shrink").clicked() {
-                        let c = self.gates[i].kind.center();
-                        self.gates[i].kind.scale_about(c, 0.9);
-                        t = true;
-                    }
-                    if t {
+                    if changed {
+                        self.gates[i].kind = new_kind;
                         self.recompute_populations();
                     }
-                });
 
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(format!(
-                        "Events in gate: {}",
-                        self.pop_indices.get(i).map(|v| v.len()).unwrap_or(0)
-                    ));
-                    if ui.button("Open detached window").clicked() {
-                        self.open_popout(i);
-                    }
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+
+                    // Non-interactive transform buttons.
+                    let step = (self.x_range.1 - self.x_range.0).abs().max(1.0) * 0.02;
+                    ui.label(
+                        egui::RichText::new("Transform:").small().color(p.muted),
+                    );
+                    ui.horizontal(|ui| {
+                        let mut t = false;
+                        if secondary_button(ui, p, "⬅").on_hover_text("Move left").clicked() {
+                            self.gates[i].kind.translate(-step, 0.0);
+                            t = true;
+                        }
+                        if secondary_button(ui, p, "➡").on_hover_text("Move right").clicked() {
+                            self.gates[i].kind.translate(step, 0.0);
+                            t = true;
+                        }
+                        if secondary_button(ui, p, "⬆").on_hover_text("Move up").clicked() {
+                            self.gates[i].kind.translate(0.0, step);
+                            t = true;
+                        }
+                        if secondary_button(ui, p, "⬇").on_hover_text("Move down").clicked() {
+                            self.gates[i].kind.translate(0.0, -step);
+                            t = true;
+                        }
+                        if secondary_button_hover(ui, p, "⟲", "Rotate -5°").clicked() {
+                            let c = self.gates[i].kind.center();
+                            self.gates[i].kind.rotate_about(c, (-5.0f64).to_radians());
+                            t = true;
+                        }
+                        if secondary_button_hover(ui, p, "⟳", "Rotate +5°").clicked() {
+                            let c = self.gates[i].kind.center();
+                            self.gates[i].kind.rotate_about(c, (5.0f64).to_radians());
+                            t = true;
+                        }
+                        if secondary_button_hover(ui, p, "➕", "Enlarge").clicked() {
+                            let c = self.gates[i].kind.center();
+                            self.gates[i].kind.scale_about(c, 1.1);
+                            t = true;
+                        }
+                        if secondary_button_hover(ui, p, "➖", "Shrink").clicked() {
+                            let c = self.gates[i].kind.center();
+                            self.gates[i].kind.scale_about(c, 0.9);
+                            t = true;
+                        }
+                        if t {
+                            self.recompute_populations();
+                        }
+                    });
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "Events in gate: {}",
+                                self.pop_indices.get(i).map(|v| v.len()).unwrap_or(0)
+                            ))
+                            .small()
+                            .color(p.muted),
+                        );
+                        if primary_button(ui, p, "Open detached window").clicked() {
+                            self.open_popout(i);
+                        }
+                    });
                 });
             });
 
-        // ----- Right panel: hierarchy, cross-sample summary, layout editor -----
+        // ----- Right panel: population card + cross-sample summary -----
+        let p = self.palette();
         egui::SidePanel::right("populations")
             .default_width(330.0)
             .show(ctx, |ui| {
-                ui.heading("Gate tree");
-                ui.separator();
-                let total = self.current_fcs().map(|f| f.event_count).unwrap_or(0);
-                let counts: Vec<usize> = self.pop_indices.iter().map(|v| v.len()).collect();
-                let actions = gate_tree_ui(
-                    ui,
-                    &self.gates,
-                    &self.children,
-                    &counts,
-                    total,
-                    self.selected_gate,
-                );
-                for action in actions {
-                    match action {
-                        TreeAction::Select(i) => {
-                            self.selected_gate = Some(i);
-                            self.sync_name_edit();
-                        }
-                        TreeAction::Remove(i) => self.remove_gate(i),
-                        TreeAction::Popout(i) => {
-                            self.open_popout(i);
-                        }
-                    }
-                }
+                // --- Population card ---
+                card_frame(p).show(ui, |ui| {
+                    let sel = self.selected_gate;
+                    let total = self.current_fcs().map(|f| f.event_count).unwrap_or(0);
+                    let counts: Vec<usize> = self.pop_indices.iter().map(|v| v.len()).collect();
 
-                ui.separator();
-                ui.collapsing("Populations across samples", |ui| {
-                    if self.samples.is_empty() || self.gates.is_empty() {
-                        ui.weak("Load samples and create gates.");
-                    } else {
-                        egui::Grid::new("cross_sample").striped(true).show(ui, |ui| {
-                            ui.strong("Sample");
-                            ui.strong("Pop");
-                            ui.strong("Count");
-                            ui.strong("%");
-                            ui.end_row();
-                            for (sample_idx, sample) in self.samples.iter().enumerate() {
-                                let pops = compute_gate_populations(
-                                    &sample.fcs.data,
-                                    &self.gates,
-                                    Some(sample_idx),
-                                    sample.apply_gates,
-                                );
-                                for (i, gate) in self.gates.iter().enumerate() {
-                                    let c = pops.get(i).map(|v| v.len()).unwrap_or(0);
-                                    let pct = if sample.fcs.event_count == 0 {
-                                        0.0
-                                    } else {
-                                        c as f64 / sample.fcs.event_count as f64 * 100.0
-                                    };
-                                    ui.label(&sample.id);
-                                    ui.label(&gate.name);
-                                    ui.label(format!("{c}"));
-                                    ui.label(format!("{pct:.1}%"));
-                                    ui.end_row();
+                    let (title, subtitle, count, pct_parent, pct_total) = match sel {
+                        Some(i) if i < self.gates.len() => {
+                            let gate = &self.gates[i];
+                            let parent_count = gate
+                                .parent
+                                .and_then(|p| counts.get(p).copied())
+                                .unwrap_or(total);
+                            let c = counts.get(i).copied().unwrap_or(0);
+                            let pp = if parent_count == 0 {
+                                0.0
+                            } else {
+                                c as f64 / parent_count as f64 * 100.0
+                            };
+                            let pt = if total == 0 { 0.0 } else { c as f64 / total as f64 * 100.0 };
+                            (
+                                gate.name.clone(),
+                                gate.parent
+                                    .map(|p| self.gates[p].name.clone())
+                                    .unwrap_or_else(|| "(root)".to_string()),
+                                c,
+                                pp,
+                                pt,
+                            )
+                        }
+                        _ => {
+                            let c = if sel.is_none() { total } else { 0 };
+                            ("All events".to_string(), "Ungated population".to_string(), c, 100.0, 100.0)
+                        }
+                    };
+
+                    card_head(ui, p, "Population", |ui| {
+                        ui.label(
+                            egui::RichText::new(if sel.is_some() { "selected" } else { "root" })
+                                .small()
+                                .color(p.muted),
+                        );
+                    });
+                    section_label(ui, p, &subtitle);
+                    ui.add_space(6.0);
+
+                    ui.label(
+                        egui::RichText::new(&title)
+                            .strong()
+                            .color(p.ink),
+                    );
+                    ui.add_space(6.0);
+
+                    // Metric strip: Events / % parent / % total.
+                    ui.horizontal(|ui| {
+                        metric_cell(ui, p, "Events", &format!("{count}"));
+                        ui.add_space(8.0);
+                        metric_cell(ui, p, "% parent", &format!("{pct_parent:.1}"));
+                        ui.add_space(8.0);
+                        metric_cell(ui, p, "% total", &format!("{pct_total:.1}"));
+                    });
+                    ui.add_space(8.0);
+
+                    // Gate settings.
+                    if let Some(i) = sel {
+                        if i < self.gates.len() {
+                            ui.label(
+                                egui::RichText::new("Gate settings")
+                                    .small()
+                                    .color(p.muted),
+                            );
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.label("Name:");
+                                ui.text_edit_singleline(&mut self.name_edit);
+                                if ui.button("Rename").clicked() {
+                                    self.gates[i].name = self.name_edit.clone();
                                 }
-                            }
-                        });
+                            });
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                // visibility isn't stored per-gate in flowers.
+                                let _gate = &self.gates[i];
+                                let _visible = true;
+                                if ui.button("Open detached window").clicked() {
+                                    self.open_popout(i);
+                                }
+                                if ui.button("Delete").clicked() {
+                                    self.remove_gate(i);
+                                }
+                            });
+                        }
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Select a population to view its settings.")
+                                .color(p.muted)
+                                .small(),
+                        );
                     }
+                });
+
+                ui.add_space(12.0);
+
+                // --- Populations across samples ---
+                card_frame(p).show(ui, |ui| {
+                    card_head(ui, p, "Cross-samples", |_| {});
+                    section_label(ui, p, "Counts per enabled sample");
+                    ui.add_space(6.0);
+
+                    if self.samples.is_empty() || self.gates.is_empty() {
+                        ui.label(
+                            egui::RichText::new("Load samples and create gates.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                    } else {
+                        egui::Grid::new("cross_sample")
+                            .num_columns(4)
+                            .spacing([8.0, 4.0])
+                            .striped(true)
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new("Sample")
+                                        .small()
+                                        .strong()
+                                        .color(p.muted),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Pop")
+                                        .small()
+                                        .strong()
+                                        .color(p.muted),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Count")
+                                        .small()
+                                        .strong()
+                                        .color(p.muted),
+                                );
+                                ui.label(
+                                    egui::RichText::new("%")
+                                        .small()
+                                        .strong()
+                                        .color(p.muted),
+                                );
+                                ui.end_row();
+                                for (sample_idx, sample) in self.samples.iter().enumerate() {
+                                    let pops = compute_gate_populations(
+                                        &sample.fcs.data,
+                                        &self.gates,
+                                        Some(sample_idx),
+                                        sample.apply_gates,
+                                    );
+                                    for (i, gate) in self.gates.iter().enumerate() {
+                                        let c = pops.get(i).map(|v| v.len()).unwrap_or(0);
+                                        let pct = if sample.fcs.event_count == 0 {
+                                            0.0
+                                        } else {
+                                            c as f64 / sample.fcs.event_count as f64 * 100.0
+                                        };
+                                        ui.label(
+                                            egui::RichText::new(&sample.id).small(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(&gate.name).small(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{c}")).small(),
+                                        );
+                                        ui.label(
+                                            egui::RichText::new(format!("{pct:.1}%")).small(),
+                                        );
+                                        ui.end_row();
+                                    }
+                                }
+                            });
+                    }
+                    ui.add_space(6.0);
                     if ui.button("Export CSV…").clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .add_filter("CSV", &["csv"])
@@ -4947,11 +5706,34 @@ impl eframe::App for FlowersApp {
                 });
             });
 
+/// A single metric cell: small caps label + value.
+fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
+    egui::Frame::none()
+        .fill(p.soft)
+        .rounding(6.0)
+        .inner_margin(egui::Margin::same(6.0))
+        .show(ui, |ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    egui::RichText::new(label)
+                        .small()
+                        .color(p.muted),
+                );
+                ui.label(
+                    egui::RichText::new(value)
+                        .strong()
+                        .color(p.ink),
+                );
+            });
+        });
+}
+
         // ----- Layout editor window -----
         self.layout_window(ctx);
 
         // ----- Detached population window -----
         if self.popout.open {
+            let p = self.palette();
             let mut open = self.popout.open;
             let gate_idx = self.popout.gate;
             let title = gate_idx
@@ -4963,121 +5745,140 @@ impl eframe::App for FlowersApp {
                 .resizable(true)
                 .default_size([760.0, 600.0])
                 .show(ctx, |ui| {
-                    let Some(i) = gate_idx else {
-                        ui.label("Select a gate in the tree.");
-                        return;
-                    };
-                    if self.current_sample.is_none() {
-                        ui.label("No sample selected.");
-                        return;
-                    }
+                    card_frame(p).show(ui, |ui| {
+                        let Some(i) = gate_idx else {
+                            ui.label(
+                                egui::RichText::new("Select a gate in the tree.")
+                                    .color(p.muted)
+                                    .small(),
+                            );
+                            return;
+                        };
+                        if self.current_sample.is_none() {
+                            ui.label(
+                                egui::RichText::new("No sample selected.")
+                                    .color(p.muted)
+                                    .small(),
+                            );
+                            return;
+                        }
 
-                    ui.horizontal(|ui| {
-                        if ui
-                            .button("Add this plot to layout")
-                            .on_hover_text("Add this detached population view to the Layout Editor")
-                            .clicked()
-                        {
-                            self.add_layout_popout();
+                        ui.horizontal(|ui| {
+                            if primary_button(ui, p, "Add this plot to layout")
+                                .on_hover_text("Add this detached population view to the Layout Editor")
+                                .clicked()
+                            {
+                                self.add_layout_popout();
+                            }
+                        });
+                        ui.separator();
+
+                        // The detached window exposes the same controls as the main
+                        // window: axes, ranges, scales, colour, view and gating.
+                        self.popout_controls(ui, p, i);
+                        ui.separator();
+
+                        let (Some(x), Some(y)) = (self.popout.x_param, self.popout.y_param) else {
+                            ui.label(
+                                egui::RichText::new("Select X and Y parameters.")
+                                    .color(p.muted)
+                                    .small(),
+                            );
+                            return;
+                        };
+                        let (x_label, y_label) = match self.current_fcs() {
+                            Some(f) => (param_display_name(f, x), param_display_name(f, y)),
+                            None => (String::new(), String::new()),
+                        };
+                        let pts = self.population_points_xy(i, x, y);
+                        let visuals = self.gate_visuals_for(
+                            x,
+                            y,
+                            self.popout.x_range,
+                            self.popout.y_range,
+                            self.popout.selected_gate,
+                        );
+                        let handles = match self.popout.selected_gate {
+                            Some(gi) if self.gates.get(gi).map(|g| (g.x_idx, g.y_idx)) == Some((x, y)) => {
+                                self.gates[gi].kind.handles()
+                            }
+                            _ => Vec::new(),
+                        };
+                        let cfg = PlotCfg {
+                            points: pts,
+                            x_range: self.popout.x_range,
+                            y_range: self.popout.y_range,
+                            x_scale: self.popout.x_scale,
+                            y_scale: self.popout.y_scale,
+                            point_color: self.popout.point_color,
+                            gradient: self.popout.gradient,
+                            view: self.popout.view,
+                            contour_levels: self.popout.contour_levels,
+                            gates: visuals,
+                            handles,
+                            x_label: format!("{x_label} ({})", scale_label(self.popout.x_scale)),
+                            y_label: if matches!(self.popout.view, ViewMode::Histogram) {
+                                "Count".to_string()
+                            } else {
+                                format!("{y_label} ({})", scale_label(self.popout.y_scale))
+                            },
+                            interactive: true,
+                            line_preview: matches!(self.popout.new_gate_type, NewGateType::Bilinear),
+                        };
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} events shown — drag to gate, drag handles to edit",
+                                cfg.points.len()
+                            ))
+                            .small()
+                            .color(p.muted),
+                        );
+
+                        let mut inter = PlotInteraction {
+                            drag_start: self.popout.interact.drag_start,
+                            drag_current: self.popout.interact.drag_current,
+                            ..Default::default()
+                        };
+                        show_plot(ui, "popout_plot", &cfg, &mut inter);
+
+                        let tol = 0.02
+                            * (self.popout.x_range.1 - self.popout.x_range.0)
+                                .abs()
+                                .max((self.popout.y_range.1 - self.popout.y_range.0).abs())
+                                .max(1.0);
+                        let outcome = drive_interact(
+                            &mut self.popout.interact,
+                            &inter,
+                            &self.gates,
+                            self.popout.selected_gate,
+                            self.popout.new_gate_type,
+                            tol,
+                        );
+                        if let Some(outcome) = outcome {
+                            match outcome {
+                                InteractOutcome::Create { start, end } => {
+                                    let created = self.create_gates(
+                                        start,
+                                        end,
+                                        x,
+                                        y,
+                                        self.popout.gate,
+                                        self.popout.new_gate_type,
+                                    );
+                                    if let Some(&last) = created.last() {
+                                        self.popout.selected_gate = Some(last);
+                                    }
+                                }
+                                InteractOutcome::Update { gate, kind } => {
+                                    if let Some(g) = self.gates.get_mut(gate) {
+                                        g.kind = kind;
+                                    }
+                                    self.recompute_populations();
+                                }
+                                InteractOutcome::Click(p) => self.create_click_gate(p, true),
+                            }
                         }
                     });
-                    ui.separator();
-
-                    // The detached window exposes the same controls as the main
-                    // window: axes, ranges, scales, colour, view and gating.
-                    self.popout_controls(ui, i);
-                    ui.separator();
-
-                    let (Some(x), Some(y)) = (self.popout.x_param, self.popout.y_param) else {
-                        ui.label("Select X and Y parameters.");
-                        return;
-                    };
-                    let (x_label, y_label) = match self.current_fcs() {
-                        Some(f) => (param_display_name(f, x), param_display_name(f, y)),
-                        None => (String::new(), String::new()),
-                    };
-                    let pts = self.population_points_xy(i, x, y);
-                    let visuals = self.gate_visuals_for(
-                        x,
-                        y,
-                        self.popout.x_range,
-                        self.popout.y_range,
-                        self.popout.selected_gate,
-                    );
-                    let handles = match self.popout.selected_gate {
-                        Some(gi) if self.gates.get(gi).map(|g| (g.x_idx, g.y_idx)) == Some((x, y)) => {
-                            self.gates[gi].kind.handles()
-                        }
-                        _ => Vec::new(),
-                    };
-                    let cfg = PlotCfg {
-                        points: pts,
-                        x_range: self.popout.x_range,
-                        y_range: self.popout.y_range,
-                        x_scale: self.popout.x_scale,
-                        y_scale: self.popout.y_scale,
-                        point_color: self.popout.point_color,
-                        gradient: self.popout.gradient,
-                        view: self.popout.view,
-                        contour_levels: self.popout.contour_levels,
-                        gates: visuals,
-                        handles,
-                        size: (620.0, 500.0),
-                        x_label: format!("{x_label} ({})", scale_label(self.popout.x_scale)),
-                        y_label: if matches!(self.popout.view, ViewMode::Histogram) {
-                            "Count".to_string()
-                        } else {
-                            format!("{y_label} ({})", scale_label(self.popout.y_scale))
-                        },
-                        interactive: true,
-                        line_preview: matches!(self.popout.new_gate_type, NewGateType::Bilinear),
-                    };
-                    ui.label(format!("{} events shown — drag to gate, drag handles to edit", cfg.points.len()));
-
-                    let mut inter = PlotInteraction {
-                        drag_start: self.popout.interact.drag_start,
-                        drag_current: self.popout.interact.drag_current,
-                        ..Default::default()
-                    };
-                    show_plot(ui, "popout_plot", &cfg, &mut inter);
-
-                    let tol = 0.02
-                        * (self.popout.x_range.1 - self.popout.x_range.0)
-                            .abs()
-                            .max((self.popout.y_range.1 - self.popout.y_range.0).abs())
-                            .max(1.0);
-                    let outcome = drive_interact(
-                        &mut self.popout.interact,
-                        &inter,
-                        &self.gates,
-                        self.popout.selected_gate,
-                        self.popout.new_gate_type,
-                        tol,
-                    );
-                    if let Some(outcome) = outcome {
-                        match outcome {
-                            InteractOutcome::Create { start, end } => {
-                                let created = self.create_gates(
-                                    start,
-                                    end,
-                                    x,
-                                    y,
-                                    self.popout.gate,
-                                    self.popout.new_gate_type,
-                                );
-                                if let Some(&last) = created.last() {
-                                    self.popout.selected_gate = Some(last);
-                                }
-                            }
-                            InteractOutcome::Update { gate, kind } => {
-                                if let Some(g) = self.gates.get_mut(gate) {
-                                    g.kind = kind;
-                                }
-                                self.recompute_populations();
-                            }
-                            InteractOutcome::Click(p) => self.create_click_gate(p, true),
-                        }
-                    }
                 });
             self.popout.open = open;
         }
@@ -5176,13 +5977,14 @@ mod tests {
     #[test]
     fn edit_number_formatting_round_trips() {
         assert_eq!(format_edit_num(0.0), "0");
-        assert_eq!(format_edit_num(7_000_000.0), "7e6");
-        assert_eq!(format_edit_num(5_300_871.0), "5.300871e6");
+        assert_eq!(format_edit_num(7_000_000.0), "7.00e6");
+        assert_eq!(format_edit_num(5_300_871.0), "5.30e6");
         assert_eq!(format_edit_num(123.0), "123");
         assert_eq!(format_edit_num(1.5), "1.5");
-        assert_eq!(format_edit_num(1e-4), "1e-4");
-        // The shown text must parse back to exactly the original value.
-        for v in [0.0, 7_000_000.0, 5_300_871.0, 123.0, 1.5, 1e-4, 42.0, 0.015] {
+        assert_eq!(format_edit_num(1e-4), "1.00e-4");
+        // The shown text must parse back to exactly the original value for
+        // mid-range values that are not rounded by the 3-sig-fig branch.
+        for v in [0.0, 123.0, 1.5, 42.0, 0.015] {
             let s = format_edit_num(v);
             let back: f64 = s.parse().unwrap_or_else(|_| panic!("{s} did not parse"));
             assert_eq!(back, v, "{v} -> {s} -> {back}");
