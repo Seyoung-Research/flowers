@@ -1,4 +1,4 @@
-//! `flowers` — an open-source FlowJo alternative for flow cytometry analysis.
+//! `flowers` — an open-source flow cytometry analysis tool.
 //!
 //! Core capabilities:
 //! - FCS 2.0 / 3.0 file parsing (`fcs`)

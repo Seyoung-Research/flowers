@@ -1,6 +1,6 @@
 # Flowers User Guide
 
-`Flowers` is an open-source FlowJo alternative for flow cytometry analysis,
+`Flowers` is an open-source flow cytometry analysis tool,
 written in Rust. This guide explains how to use the graphical user interface
 (`flowers-gui`) and all of its features.
 
@@ -206,7 +206,7 @@ In the gate editor you can:
 
 ## Gate Hierarchy & Tree
 
-Gates are organised in a tree (like FlowJo) shown in the right panel:
+Gates are organised in a tree shown in the right panel:
 
 - Each gate can have a **parent** gate. Child gates are applied to the parent's
   population (hierarchical gating).

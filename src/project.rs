@@ -164,10 +164,17 @@ pub struct ProjectPanel {
     pub view: String,
     pub gate: Option<usize>,
     pub title: String,
+    /// Font size (in SVG units) of the panel's title.
+    #[serde(default = "default_panel_title_size")]
+    pub title_size: f32,
     /// Canvas rectangle `[x, y, w, h]`.
     pub rect: [f32; 4],
     pub x_label: ProjectLabel,
     pub y_label: ProjectLabel,
+}
+
+fn default_panel_title_size() -> f32 {
+    13.0
 }
 
 /// Styling for one layout axis label.
@@ -269,6 +276,7 @@ mod tests {
                 view: "dots".to_string(),
                 gate: Some(0),
                 title: "Panel".to_string(),
+                title_size: 13.0,
                 rect: [10.0, 20.0, 300.0, 200.0],
                 x_label: ProjectLabel {
                     text: Some("FSC".to_string()),

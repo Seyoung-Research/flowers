@@ -9,7 +9,7 @@ use flowers::{
 use std::fs;
 use std::path::PathBuf;
 
-/// `flowers` — an open-source FlowJo alternative for flow cytometry analysis.
+/// `flowers` — an open-source flow cytometry analysis tool.
 #[derive(Parser)]
 #[command(name = "flowers")]
 #[command(version = "0.2.0")]

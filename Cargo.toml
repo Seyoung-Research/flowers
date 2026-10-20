@@ -2,7 +2,7 @@
 name = "flowers"
 version = "0.2.0"
 edition = "2024"
-description = "FlowJo alternative: open-source flow cytometry analysis in Rust"
+description = "Flow cytometry analysis in Rust: open-source flow cytometry analysis tool"
 
 [dependencies]
 nom = "7.1"

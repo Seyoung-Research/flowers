@@ -545,16 +545,19 @@ pub fn histogram_svg(
         origin_x, origin_y, origin_x, origin_y - plot_h, style.axis_color
     ));
 
-    // Bars.
+    // Bars. Inset each bar slightly from its neighbours so the histogram
+    // renders with gaps instead of solid, blocky rectangles.
     for (b, &c) in counts.iter().enumerate() {
         let x0 = sx(min_v + b as f32 * bin_w);
         let x1 = sx(min_v + (b + 1) as f32 * bin_w);
         let y_top = sy(c);
+        let bar_w = (x1 - x0).max(1.0) * 0.85;
+        let bx0 = x0 + (x1 - x0 - bar_w) / 2.0;
         svg.push_str(&format!(
             "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" fill=\"{}\" />\n",
-            x0,
+            bx0,
             y_top,
-            (x1 - x0).max(1.0),
+            bar_w,
             origin_y - y_top,
             style.point_color
         ));

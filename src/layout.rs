@@ -30,6 +30,8 @@ pub struct LayoutOptions {
     /// Font family used for panel titles (also carried into raster exports so
     /// text does not fall back to a mismatched font).
     pub font_family: String,
+    /// Font size (in SVG units) of each panel's title.
+    pub title_size: f32,
 }
 
 impl Default for LayoutOptions {
@@ -43,6 +45,7 @@ impl Default for LayoutOptions {
             background: "#ffffff".to_string(),
             text_color: "#222222".to_string(),
             font_family: "sans-serif".to_string(),
+            title_size: 13.0,
         }
     }
 }
@@ -100,10 +103,11 @@ pub fn render_layout(panels: &[LayoutPanel], opts: &LayoutOptions) -> String {
 
         // Title.
         svg.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"{:.1}\" font-family=\"{}\" font-size=\"13\" font-weight=\"bold\" fill=\"{}\" text-anchor=\"middle\">{}</text>\n",
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-family=\"{}\" font-size=\"{}\" font-weight=\"bold\" fill=\"{}\" text-anchor=\"middle\">{}</text>\n",
             cx + opts.cell_width as f64 / 2.0,
             cy + 18.0,
             opts.font_family,
+            opts.title_size,
             opts.text_color,
             svg_escape(&panel.title)
         ));
@@ -130,7 +134,7 @@ pub fn render_layout(panels: &[LayoutPanel], opts: &LayoutOptions) -> String {
 ///
 /// This backs the GUI layout editor, where panels can be dragged and resized
 /// like objects in a drawing program before being exported.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LayoutPlacement {
     pub title: String,
     pub svg: String,
@@ -141,6 +145,24 @@ pub struct LayoutPlacement {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Font size (in SVG units) of the panel's title.
+    pub title_size: f32,
+}
+
+impl Default for LayoutPlacement {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            svg: String::new(),
+            svg_width: 0,
+            svg_height: 0,
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+            title_size: 13.0,
+        }
+    }
 }
 
 /// Composes freely-placed panels into a single SVG canvas.
@@ -168,10 +190,11 @@ pub fn render_layout_free(
     for p in placements {
         // Title above the panel.
         svg.push_str(&format!(
-            "<text x=\"{:.1}\" y=\"{:.1}\" font-family=\"{}\" font-size=\"13\" font-weight=\"bold\" fill=\"{}\" text-anchor=\"middle\">{}</text>\n",
+            "<text x=\"{:.1}\" y=\"{:.1}\" font-family=\"{}\" font-size=\"{}\" font-weight=\"bold\" fill=\"{}\" text-anchor=\"middle\">{}</text>\n",
             p.x as f64 + p.width as f64 / 2.0,
             p.y as f64 + 12.0,
             opts.font_family,
+            p.title_size,
             opts.text_color,
             svg_escape(&p.title)
         ));
@@ -262,6 +285,7 @@ mod tests {
             y: 40.0,
             width: 300.0,
             height: 260.0,
+            title_size: 13.0,
         }];
         let out = render_layout_free(800, 600, &placements, &LayoutOptions::default());
         assert!(out.starts_with("<svg"));

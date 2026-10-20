@@ -2,7 +2,7 @@
 //!
 //! Provides a desktop application for loading FCS files, drawing gates on
 //! scatter plots (rect / ellipse / quadrant / bilinear), organising gates as a
-//! hierarchical tree (like FlowJo), applying those gates to every loaded
+//! Hierarchical population tree, applying those gates to every loaded
 //! sample, exporting CSV reports, and arranging plots in a "layout editor".
 //!
 //! Feature map (see `FEATURES.md`):
@@ -706,6 +706,42 @@ fn label_text_edit(ui: &mut egui::Ui, id: &str, style: &mut LabelStyle) {
         } else {
             Some(text)
         };
+    }
+}
+
+/// Draws a histogram-bar preview for a layout-editor panel in histogram
+/// view. `pts` holds normalised `[0, 1]` x values (one per event, subsampled
+/// when the panel was created); bins are drawn left to right.
+fn draw_preview_histogram(
+    painter: &egui::Painter,
+    area: egui::Rect,
+    pts: &[[f32; 2]],
+    color: egui::Color32,
+) {
+    if pts.is_empty() {
+        return;
+    }
+    const NBINS: usize = 8;
+    let n = NBINS as f32;
+    let bin_w = area.width() / n;
+    let mut counts = vec![0u32; NBINS];
+    for p in pts {
+        let i = (p[0].clamp(0.0, 1.0) * n) as usize;
+        counts[i.min(NBINS - 1)] += 1;
+    }
+    let max = counts.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let bar_w = bin_w * 0.8;
+    for (i, &c) in counts.iter().enumerate() {
+        let bh = area.height() * 0.9 * (c as f32 / max);
+        if bh < 0.5 {
+            continue;
+        }
+        let x = area.left() + i as f32 * bin_w + (bin_w - bar_w) / 2.0;
+        painter.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(x, area.bottom() - bh), egui::vec2(bar_w, bh)),
+            0.0_f32,
+            color,
+        );
     }
 }
 
@@ -1549,6 +1585,8 @@ struct LayoutPanelSpec {
     /// Optional gate index: if set, the panel shows only that gated population.
     gate: Option<usize>,
     title: String,
+    /// Font size (in SVG units) of the panel's title.
+    title_size: f32,
     /// Position & size on the layout canvas, in canvas pixels.
     rect: egui::Rect,
     /// Normalised (0..1) preview points, cached when the panel is added.
@@ -1722,6 +1760,12 @@ pub struct FlowersApp {
     /// prompt. `None` when no prompt is pending.
     pending_apply_prompt: Option<usize>,
 
+    // Quit confirmation.
+    /// True while the "unsaved changes" quit confirmation popup is open.
+    quit_confirm: bool,
+    /// True when the current document differs from the last saved workspace.
+    dirty: bool,
+
     // Undo / redo.
     /// Snapshots of [`UndoState`], oldest first. `history[history_idx]` is the
     /// currently-applied state.
@@ -1767,6 +1811,8 @@ impl Default for FlowersApp {
             name_edit: String::new(),
             status: "Ready — load an FCS file".to_string(),
             pending_apply_prompt: None,
+            quit_confirm: false,
+            dirty: false,
             history: Vec::new(),
             history_idx: 0,
             history_skip: false,
@@ -2222,6 +2268,8 @@ impl FlowersApp {
         if !changed || pointer_down {
             return;
         }
+        // The document differs from the last saved state.
+        self.dirty = true;
         // Drop any redo entries and append the new state.
         self.history.truncate(self.history_idx + 1);
         self.history.push(current);
@@ -2237,6 +2285,7 @@ impl FlowersApp {
 
     /// Resets the application to an empty workspace, keeping the theme.
     fn new_workspace(&mut self) {
+        self.dirty = false;
         self.samples.clear();
         self.gates.clear();
         self.layout_panels.clear();
@@ -2299,6 +2348,7 @@ impl FlowersApp {
                 view: view_mode_id(p.view).to_string(),
                 gate: p.gate,
                 title: p.title.clone(),
+                title_size: p.title_size,
                 rect: [p.rect.min.x, p.rect.min.y, p.rect.width(), p.rect.height()],
                 x_label: label_to_project(&p.x_label),
                 y_label: label_to_project(&p.y_label),
@@ -2332,11 +2382,14 @@ impl FlowersApp {
         let project = self.to_project();
         match crate::project::to_json(&project) {
             Ok(json) => match std::fs::write(path, json) {
-                Ok(()) => self.set_status(format!(
-                    "Saved workspace: {} sample(s), {} gate(s)",
-                    project.samples.len(),
-                    project.gates.len()
-                )),
+                Ok(()) => {
+                    self.dirty = false;
+                    self.set_status(format!(
+                        "Saved workspace: {} sample(s), {} gate(s)",
+                        project.samples.len(),
+                        project.gates.len()
+                    ));
+                }
                 Err(e) => self.set_status(format!("Error writing workspace: {e}")),
             },
             Err(e) => self.set_status(format!("Error encoding workspace: {e}")),
@@ -2432,6 +2485,7 @@ impl FlowersApp {
                 view: view_mode_from_id(&pp.view),
                 gate: pp.gate,
                 title: pp.title.clone(),
+                title_size: pp.title_size,
                 rect: egui::Rect::from_min_size(
                     egui::pos2(pp.rect[0], pp.rect[1]),
                     egui::vec2(pp.rect[2].max(1.0), pp.rect[3].max(1.0)),
@@ -2468,6 +2522,7 @@ impl FlowersApp {
         self.history.clear();
         self.history_idx = 0;
         self.record_history(false);
+        self.dirty = false;
 
         if missing.is_empty() {
             self.set_status(format!(
@@ -3041,7 +3096,7 @@ impl FlowersApp {
                 }
             }
             if matches!(self.popout.view, ViewMode::Contour) {
-                ui.add(egui::Slider::new(&mut self.popout.contour_levels, 3..=20).text("levels"));
+                ui.add(egui::Slider::new(&mut self.popout.contour_levels, 3..=100).text("levels"));
             }
         });
 
@@ -3321,11 +3376,14 @@ impl FlowersApp {
     /// Build the panel SVGs and export the layout figure.
     /// Compose the layout canvas panels into a single SVG document.
     fn layout_svg(&self) -> (String, usize) {
+        // Each panel reserves a title strip above its content, so the canvas
+        // height must include it or the bottom axis labels get clipped.
+        let title_h = LayoutOptions::default().title_height as f32;
         let mut max_x = 100.0f32;
         let mut max_y = 100.0f32;
         for p in &self.layout_panels {
             max_x = max_x.max(p.rect.max.x);
-            max_y = max_y.max(p.rect.max.y);
+            max_y = max_y.max(p.rect.max.y + title_h);
         }
         let canvas_w = (max_x + 20.0) as u32;
         let canvas_h = (max_y + 20.0) as u32;
@@ -3418,6 +3476,7 @@ impl FlowersApp {
                     y: spec.rect.min.y,
                     width: spec.rect.width(),
                     height: spec.rect.height(),
+                    title_size: spec.title_size,
                 })
             })
             .collect();
@@ -3451,6 +3510,25 @@ impl FlowersApp {
         }
     }
 
+    /// Default plot title for a layout panel (used when the user clears it).
+    fn default_panel_title(&self, panel: &LayoutPanelSpec) -> String {
+        let Some(s) = self.samples.get(panel.sample) else {
+            return String::new();
+        };
+        let fcs = &s.fcs;
+        if let Some(g) = panel.gate {
+            let gate_name = self
+                .gates
+                .get(g)
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "population".to_string());
+            let x_name = param_display_name(fcs, panel.x);
+            let y_name = param_display_name(fcs, panel.y);
+            return format!("Population: {gate_name} ({x_name} vs {y_name})");
+        }
+        param_display_name(fcs, panel.y)
+    }
+
     /// Add the current main plot to the layout canvas.
     fn add_layout_current(&mut self) {
         let (Some(s), Some(x), Some(y)) = (self.current_sample, self.x_param, self.y_param)
@@ -3475,6 +3553,7 @@ impl FlowersApp {
             view: self.view_mode,
             gate: None,
             title,
+            title_size: 14.0,
             rect,
             preview,
             x_label: LabelStyle::x_default(),
@@ -3513,6 +3592,7 @@ impl FlowersApp {
             view: self.popout.view,
             gate: Some(gate_idx),
             title,
+            title_size: 14.0,
             rect,
             preview,
             x_label: LabelStyle::x_default(),
@@ -3697,16 +3777,21 @@ impl FlowersApp {
             let selected = self.layout_selected == Some(i);
             painter.rect_filled(r, 2.0_f32, egui::Color32::WHITE);
 
-            // Title.
+            // Title (falls back to the default title for this panel when blank).
+            let title_text = if panel.title.trim().is_empty() {
+                self.default_panel_title(panel)
+            } else {
+                panel.title.clone()
+            };
             painter.text(
                 r.min + egui::vec2(r.width() / 2.0, -6.0),
                 egui::Align2::CENTER_BOTTOM,
-                &panel.title,
-                egui::FontId::proportional(12.0),
+                &title_text,
+                egui::FontId::proportional(panel.title_size),
                 egui::Color32::from_gray(60),
             );
 
-            // Preview points.
+            // Preview points (histogram panels render as bars, not dots).
             let inner = r.shrink(8.0);
             let dot = egui::Color32::from_rgba_unmultiplied(
                 self.point_color.r(),
@@ -3714,14 +3799,18 @@ impl FlowersApp {
                 self.point_color.b(),
                 180,
             );
-            for pt in &panel.preview {
-                let x = inner.min.x + pt[0].clamp(0.0, 1.0) * inner.width();
-                let y = inner.max.y - pt[1].clamp(0.0, 1.0) * inner.height();
-                painter.rect_filled(
-                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(1.5, 1.5)),
-                    0.0_f32,
-                    dot,
-                );
+            if panel.view == ViewMode::Histogram {
+                draw_preview_histogram(&painter, inner, &panel.preview, dot);
+            } else {
+                for pt in &panel.preview {
+                    let x = inner.min.x + pt[0].clamp(0.0, 1.0) * inner.width();
+                    let y = inner.max.y - pt[1].clamp(0.0, 1.0) * inner.height();
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(1.5, 1.5)),
+                        0.0_f32,
+                        dot,
+                    );
+                }
             }
 
             // Axis labels (using the per-panel label style).
@@ -3909,6 +3998,21 @@ impl FlowersApp {
                         ui.weak(
                             "Leave a text box blank to use the parameter name. The (linear)/(log) suffix is kept.",
                         );
+
+                        ui.separator();
+                        ui.strong("Plot title style (selected panel)");
+                        ui.horizontal(|ui| {
+                            ui.label("Title text:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut panel.title)
+                                    .id_salt("layout_panel_title")
+                                    .hint_text("Plot title")
+                                    .desired_width(140.0),
+                            );
+                            ui.label("size:");
+                            ui.add(egui::Slider::new(&mut panel.title_size, 4.0..=72.0));
+                        });
+                        ui.weak("Leave the title text blank to use the default title.");
                     }
                 }
 
@@ -3954,11 +4058,14 @@ impl FlowersApp {
 
 /// The pixel size of the layout canvas implied by the placed panels.
 fn layout_canvas_size(panels: &[LayoutPanelSpec]) -> (u32, u32) {
+    // Content sits below a title strip inside each panel, so reserve room for
+    // it or the bottom axis labels get clipped in raster exports.
+    let title_h = LayoutOptions::default().title_height as f32;
     let mut max_x = 100.0f32;
     let mut max_y = 100.0f32;
     for p in panels {
         max_x = max_x.max(p.rect.max.x);
-        max_y = max_y.max(p.rect.max.y);
+        max_y = max_y.max(p.rect.max.y + title_h);
     }
     ((max_x + 20.0) as u32, (max_y + 20.0) as u32)
 }
@@ -4088,6 +4195,39 @@ impl eframe::App for FlowersApp {
             Theme::Light => egui::Visuals::light(),
         });
 
+        // ----- Quit confirmation -----
+        // Shown when the user asks to quit with unsaved changes; offers to save
+        // first, quit without saving, or cancel.
+        if self.quit_confirm {
+            egui::Window::new("Quit")
+                .collapsible(false)
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.label("You have unsaved changes. Save your workspace before quitting.");
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Save Workspace…").clicked() {
+                            self.quit_confirm = false;
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("Flowers workspace", &["wsp", "json"])
+                                .set_file_name("workspace.wsp")
+                                .save_file()
+                            {
+                                self.save_workspace(&path);
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        }
+                        if ui.button("Quit").clicked() {
+                            self.quit_confirm = false;
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            self.quit_confirm = false;
+                        }
+                    });
+                });
+        }
+
         // ----- Undo / redo keyboard shortcuts -----
         // Skipped while a text field has focus so the widget keeps its own undo.
         if !ctx.wants_keyboard_input() {
@@ -4173,7 +4313,11 @@ impl eframe::App for FlowersApp {
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         ui.close_menu();
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        if self.dirty {
+                            self.quit_confirm = true;
+                        } else {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
                     }
                 });
 
@@ -4233,7 +4377,7 @@ impl eframe::App for FlowersApp {
                 });
 
                 ui.separator();
-                ui.label("flowers — FlowJo alternative");
+                ui.label("flowers — flow cytometry analysis");
             });
         });
 
@@ -4402,7 +4546,7 @@ impl eframe::App for FlowersApp {
                         });
                         if matches!(self.view_mode, ViewMode::Contour) {
                             ui.add(
-                                egui::Slider::new(&mut self.contour_levels, 3..=20)
+                                egui::Slider::new(&mut self.contour_levels, 3..=100)
                                     .text("contour levels"),
                             );
                         }

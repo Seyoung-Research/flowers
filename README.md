@@ -1,9 +1,9 @@
-# flowers - A FlowJo Alternative in Rust
+# flowers - Flow Cytometry Analysis in Rust
 
 [![Rust](https://img.shields.io/badge/rust-1.99+-orange.svg)](https://rust-lang.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://img.shields.io/badge/license-MIT-blue.svg)
 
-`flowers` is an open-source FlowJo alternative for flow cytometry analysis, written in Rust. It provides FCS file parsing, compensation, multi-gate gating (rectangular, elliptical, polygon, quadrant, bilinear, boolean), population statistics, SVG plotting, and a desktop GUI.
+`flowers` is an open-source flow cytometry analysis tool written in Rust. It provides FCS file parsing, compensation, multi-gate gating (rectangular, elliptical, polygon, quadrant, bilinear, boolean), population statistics, SVG plotting, and a desktop GUI.
 
 ## Features
 
@@ -19,7 +19,7 @@
 | **Visualization** | SVG dot plots, 1D histograms, density gradients, and topographic contour views |
 | **Axis control** | Per-axis linear/log scales, editable ranges (scientific-notation display, proportional drag speed, type `1e7`), and one-click auto-fit |
 | **Smart default axes** | New files open on FSC-H vs SSC-H (or the best FSC/SSC match) automatically |
-| **Gate hierarchy** | FlowJo-style population tree with counts and percentages |
+| **Gate hierarchy** | Hierarchical population tree with counts and percentages |
 | **Cross-sample gating** | Apply the same gate set to every loaded FCS file, with a per-file prompt |
 | **Undo / Redo** | `Ctrl+Z` / `Ctrl+Shift+Z` across gating, view settings and the layout editor |
 | **Workspaces** | Save / load a `.wsp` project (file list + gates + view + layout) from the File menu |
@@ -76,7 +76,7 @@ cargo run --bin flowers-gui --release
    **Auto** to fit the axis to the data.
 5. Open **Point & view options** to change the dot colour, enable **density gradient**
    layering (on by default), or switch the view to **Dots**, **Contour**, or **Histogram**.
-6. Gates appear in the **Gate tree** on the right, nested like FlowJo; select a gate to
+6. Gates appear in the **Gate tree** on the right, nested like a traditional flow cytometer gating hierarchy; select a gate to
    edit its geometry, name, colour, or parent. A selected gate shows **drag handles** on
    the plot (corner/edge handles enlarge or stretch, the diamond handle rotates, dragging the body
    moves it) plus **nudge / rotate / scale** buttons in the editor. Click **◧** to open a
@@ -223,4 +223,4 @@ This project is licensed under the MIT License — see the [LICENSE](LICENSE) fi
 
 ## Acknowledgments
 
-Inspired by FlowJo (BD) and the open-source flow cytometry ecosystem. Built with [egui](https://github.com/emilk/egui), [ndarray](https://github.com/rust-ndarray/ndarray), [rfd](https://github.com/RustFileDialog/rfd), and [thiserror](https://github.com/dtolnay/thiserror).
+Inspired by flow cytometers (e.g. BD FACS) and the open-source flow cytometry ecosystem. Built with [egui](https://github.com/emilk/egui), [ndarray](https://github.com/rust-ndarray/ndarray), [rfd](https://github.com/RustFileDialog/rfd), and [thiserror](https://github.com/dtolnay/thiserror).
