@@ -564,6 +564,15 @@ impl GateKind {
         }
     }
 
+    /// The split point (crosshair) shared by the sibling wedges of a quadrant
+    /// gate, if this gate is a quadrant.
+    fn quadrant_split(&self) -> Option<[f64; 2]> {
+        match self {
+            GateKind::Quadrant { x, y, .. } => Some([*x, *y]),
+            _ => None,
+        }
+    }
+
     /// Translate the whole gate by `(dx, dy)`.
     fn translate(&mut self, dx: f64, dy: f64) {
         match self {
@@ -1440,11 +1449,15 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
         (by0, by1)
     };
 
+    // Size the plot to the available UI space instead of a fixed size, so it
+    // never overflows its panel and gets clipped by the panels around it (the
+    // plot used to be laid out as a square of the full available width, which
+    // pushed it past the bottom of the panel).
+    let avail = ui.available_rect_before_wrap();
     Plot::new(id)
-        // Let egui_plot size to the available UI space instead of a fixed
-        // size, so the plot is never cut off on the right edge and the Y axis
-        // label gets proper room.
         .view_aspect(1.0)
+        .width(avail.width())
+        .height(avail.height())
         .allow_boxed_zoom(false)
         .allow_drag(false)
         .allow_scroll(false)
@@ -3047,6 +3060,91 @@ impl FlowersApp {
         self.set_status("Removed gate");
     }
 
+    /// Commits a gate-geometry update from a manipulation (drag, nudge, scale,
+    /// numeric edit) onto the gate list, keeping quadrant groups consistent.
+    ///
+    /// The four quadrants of a split are four sibling gates that share one
+    /// split point. Applying a move / resize / split edit to one wedge means
+    /// applying it to the shared split, so the sibling wedges are shifted by
+    /// the same delta. Without this, moving a quadrant gate would only move the
+    /// dragged wedge and the remaining three would keep their stale splits.
+    fn commit_gate_edit(&mut self, gate: usize, old: &GateKind, new: &GateKind) {
+        if let (Some(old_split), Some(new_split)) = (old.quadrant_split(), new.quadrant_split()) {
+            let ox = old_split[0];
+            let oy = old_split[1];
+            let x = new_split[0];
+            let y = new_split[1];
+            let dx = x - ox;
+            let dy = y - oy;
+            if dx == 0.0 && dy == 0.0 {
+                return;
+            }
+            let (x_idx, y_idx) = match self.gates.get(gate) {
+                Some(g) => (g.x_idx, g.y_idx),
+                None => return,
+            };
+            for (i, g) in self.gates.iter_mut().enumerate() {
+                if i == gate {
+                    continue;
+                }
+                if let Some(sx_yn) = g.kind.quadrant_split() {
+                    let (sx, sy) = (sx_yn[0], sx_yn[1]);
+                    // Sibling wedge of the same split (same parameter pair) moves
+                    // along with the rest of the group.
+                    let is_sibling = g.x_idx == x_idx
+                        && g.y_idx == y_idx
+                        && (sx - ox).abs() < 1e-9
+                        && (sy - oy).abs() < 1e-9;
+                    if is_sibling {
+                        g.kind.translate(dx, dy);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Nudge a gate by a data-unit delta, keeping quadrant groups in sync.
+    fn nudge_gate(&mut self, gate: usize, dx: f64, dy: f64) {
+        let old = self.gates.get(gate).map(|g| g.kind.clone());
+        if let Some(g) = self.gates.get_mut(gate) {
+            g.kind.translate(dx, dy);
+        }
+        if let Some(old) = old {
+            let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
+            if let Some(new_kind) = new_kind {
+                self.commit_gate_edit(gate, &old, &new_kind);
+            }
+        }
+    }
+
+    /// Rotate a gate about a point by a delta, keeping quadrant groups in sync.
+    fn rotate_gate(&mut self, gate: usize, center: [f64; 2], delta: f64) {
+        let old = self.gates.get(gate).map(|g| g.kind.clone());
+        if let Some(g) = self.gates.get_mut(gate) {
+            g.kind.rotate_about(center, delta);
+        }
+        if let Some(old) = old {
+            let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
+            if let Some(new_kind) = new_kind {
+                self.commit_gate_edit(gate, &old, &new_kind);
+            }
+        }
+    }
+
+    /// Scale a gate about a point by a factor, keeping quadrant groups in sync.
+    fn scale_gate(&mut self, gate: usize, center: [f64; 2], factor: f64) {
+        let old = self.gates.get(gate).map(|g| g.kind.clone());
+        if let Some(g) = self.gates.get_mut(gate) {
+            g.kind.scale_about(center, factor);
+        }
+        if let Some(old) = old {
+            let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
+            if let Some(new_kind) = new_kind {
+                self.commit_gate_edit(gate, &old, &new_kind);
+            }
+        }
+    }
+
     fn add_default_gate(&mut self) {
         let (Some(x_idx), Some(y_idx)) = (self.x_param, self.y_param) else {
             self.set_status("Select X and Y parameters first");
@@ -3318,39 +3416,39 @@ impl FlowersApp {
                     ui.label(egui::RichText::new("Transform:").small().color(p.muted));
                     let mut t = false;
                     if secondary_button(ui, p, "⬅").clicked() {
-                        self.gates[gi].kind.translate(-step, 0.0);
+                        self.nudge_gate(gi, -step, 0.0);
                         t = true;
                     }
                     if secondary_button(ui, p, "➡").clicked() {
-                        self.gates[gi].kind.translate(step, 0.0);
+                        self.nudge_gate(gi, step, 0.0);
                         t = true;
                     }
                     if secondary_button(ui, p, "⬆").clicked() {
-                        self.gates[gi].kind.translate(0.0, step);
+                        self.nudge_gate(gi, 0.0, step);
                         t = true;
                     }
                     if secondary_button(ui, p, "⬇").clicked() {
-                        self.gates[gi].kind.translate(0.0, -step);
+                        self.nudge_gate(gi, 0.0, -step);
                         t = true;
                     }
                     if secondary_button_hover(ui, p, "⟲", "Rotate -5°").clicked() {
                         let c = self.gates[gi].kind.center();
-                        self.gates[gi].kind.rotate_about(c, (-5.0f64).to_radians());
+                        self.rotate_gate(gi, c, (-5.0f64).to_radians());
                         t = true;
                     }
                     if secondary_button_hover(ui, p, "⟳", "Rotate +5°").clicked() {
                         let c = self.gates[gi].kind.center();
-                        self.gates[gi].kind.rotate_about(c, (5.0f64).to_radians());
+                        self.rotate_gate(gi, c, (5.0f64).to_radians());
                         t = true;
                     }
                     if secondary_button_hover(ui, p, "➕", "Enlarge").clicked() {
                         let c = self.gates[gi].kind.center();
-                        self.gates[gi].kind.scale_about(c, 1.1);
+                        self.scale_gate(gi, c, 1.1);
                         t = true;
                     }
                     if secondary_button_hover(ui, p, "➖", "Shrink").clicked() {
                         let c = self.gates[gi].kind.center();
-                        self.gates[gi].kind.scale_about(c, 0.9);
+                        self.scale_gate(gi, c, 0.9);
                         t = true;
                     }
                     if t {
@@ -4929,245 +5027,18 @@ impl eframe::App for FlowersApp {
                 });
             });
 
-        // ----- Central panel: plot card -----
-        let p = self.palette();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            if self.current_fcs().is_none() {
-                card_frame(p).show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Load an FCS file to begin")
-                                .color(p.muted)
-                                .small(),
-                        );
-                        ui.label(
-                            egui::RichText::new("Use File ▸ Load FCS, or click Import FCS on the left.")
-                                .color(p.muted)
-                                .small(),
-                        );
-                        ui.add_space(8.0);
-                    });
-                });
-                return;
-            }
-            if self.x_param.is_none() || self.y_param.is_none() {
-                card_frame(p).show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Select X and Y parameters to plot")
-                                .color(p.muted)
-                                .small(),
-                        );
-                        ui.add_space(8.0);
-                    });
-                });
-                return;
-            }
-            if self.plot_points.is_empty() {
-                self.update_plot_points();
-            }
-
-            let cfg = self.main_plot_cfg();
-
-            card_frame(p).show(ui, |ui| {
-                // --- Plot header: title + tools ---
-                let sample_name = self
-                    .current_sample
-                    .and_then(|i| self.samples.get(i))
-                    .map(|s| s.id.clone())
-                    .unwrap_or_default();
-                let comp_status = if self.gates.is_empty() {
-                    "no gates".to_string()
-                } else {
-                    format!("{} gate(s)", self.gates.len())
-                };
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(&sample_name)
-                                .strong()
-                                .color(p.ink),
-                        );
-                        ui.label(
-                            egui::RichText::new(comp_status)
-                                .small()
-                                .color(p.muted),
-                        );
-                    });
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            // Save plot (rightmost).
-                            if secondary_button(ui, p, "Save PNG").clicked() {
-                                let mut dlg = rfd::FileDialog::new().set_file_name("plot.png");
-                                for &(name, exts) in ImageFormat::dialog_filters() {
-                                    dlg = dlg.add_filter(name, exts);
-                                }
-                                if let Some(path) = dlg.save_file() {
-                                    self.export_image(&path);
-                                }
-                            }
-                            ui.add_space(6.0);
-                            // Clear / finish.
-                            if secondary_button(ui, p, "Clear").clicked() {
-                                // Cancel any in-progress draw.
-                                self.interact.drag_start = None;
-                                self.interact.drag_current = None;
-                            }
-                            ui.add_space(6.0);
-                            // Tool toggle group: select / rectangle / polygon.
-                            egui::Frame::none()
-                                .fill(p.soft)
-                                .stroke(egui::Stroke::new(1.0, p.border))
-                                .rounding(6.0)
-                                .inner_margin(egui::Margin::same(2.0))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        let rect_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Rect | NewGateType::Ellipse
-                                        );
-                                        let poly_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Polygon
-                                        );
-                                        let quad_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Quadrant
-                                        );
-                                        let line_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Bilinear
-                                        );
-                                        if tool_button(
-                                            ui,
-                                            p,
-                                            "Rectangle",
-                                            rect_active && !poly_active && !quad_active && !line_active,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.new_gate_type = NewGateType::Rect;
-                                        }
-                                        if tool_button(
-                                            ui,
-                                            p,
-                                            "Ellipse",
-                                            matches!(self.new_gate_type, NewGateType::Ellipse)
-                                                && !poly_active && !quad_active && !line_active,
-                                        )
-                                        .clicked()
-                                        {
-                                            self.new_gate_type = NewGateType::Ellipse;
-                                        }
-                                        if tool_button(ui, p, "Polygon", poly_active)
-                                            .clicked()
-                                        {
-                                            self.new_gate_type = NewGateType::Polygon;
-                                        }
-                                        if tool_button(ui, p, "Quadrant", quad_active)
-                                            .clicked()
-                                        {
-                                            self.new_gate_type = NewGateType::Quadrant;
-                                        }
-                                        if tool_button(ui, p, "Bilinear", line_active)
-                                            .clicked()
-                                        {
-                                            self.new_gate_type = NewGateType::Bilinear;
-                                        }
-                                    });
-                                });
-                        },
-                    );
-                });
-                ui.add_space(8.0);
-
-                // --- Plot area ---
-                egui::ScrollArea::both().show(ui, |ui| {
-                    let mut inter = PlotInteraction {
-                        drag_start: self.interact.drag_start,
-                        drag_current: self.interact.drag_current,
-                        ..Default::default()
-                    };
-                    show_plot(ui, "scatter_plot", &cfg, &mut inter);
-
-                    let tol = 0.02
-                        * (self.x_range.1 - self.x_range.0)
-                            .abs()
-                            .max((self.y_range.1 - self.y_range.0).abs())
-                            .max(1.0);
-                    let outcome = drive_interact(
-                        &mut self.interact,
-                        &inter,
-                        &self.gates,
-                        self.selected_gate,
-                        self.new_gate_type,
-                        tol,
-                    );
-                    if let Some(outcome) = outcome {
-                        match outcome {
-                            InteractOutcome::Create { start, end } => {
-                                self.create_gate_from_drag(start, end)
-                            }
-                            InteractOutcome::Update { gate, kind } => {
-                                if let Some(g) = self.gates.get_mut(gate) {
-                                    g.kind = kind;
-                                }
-                                self.recompute_populations();
-                            }
-                            InteractOutcome::Click(p) => {
-                                self.create_click_gate(p, false)
-                            }
-                        }
-                    }
-                });
-                ui.add_space(8.0);
-
-                // --- Plot footer: hints + options ---
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Draw hints")
-                            .small()
-                            .color(p.muted),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("drag").small().strong().color(p.ink));
-                    ui.label(" to draw a gate  ");
-                    ui.label(egui::RichText::new("click").small().strong().color(p.ink));
-                    ui.label(" to place a quadrant/bilinear gate  ");
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.checkbox(
-                                &mut self.gradient,
-                                egui::RichText::new("density gradient").small().color(p.muted),
-                            );
-                            ui.add_space(8.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    self.pop_indices
-                                        .iter()
-                                        .map(|v| v.len())
-                                        .sum::<usize>()
-                                        .to_string(),
-                                )
-                                .small()
-                                .color(p.muted),
-                            );
-                            ui.label(" events drawn");
-                        },
-                    );
-                });
-            });
-        });
-
         // ----- Bottom panel: gate editor -----
         let p = self.palette();
         egui::TopBottomPanel::bottom("gate_editor")
             .resizable(true)
             .default_height(200.0)
+            // Explicit frame (content spacing above/below) instead of the
+            // default panel frame, so the editor has correct padding.
+            .frame(
+                egui::Frame::none()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::same(10.0)),
+            )
             .show(ctx, |ui| {
                 let sel = self.selected_gate;
                 card_frame(p).show(ui, |ui| {
@@ -5436,7 +5307,10 @@ impl eframe::App for FlowersApp {
                         }
                     }
                     if changed {
+                        let old_kind = self.gates[i].kind.clone();
                         self.gates[i].kind = new_kind;
+                        let new_kind_value = self.gates[i].kind.clone();
+                        self.commit_gate_edit(i, &old_kind, &new_kind_value);
                         self.recompute_populations();
                     }
 
@@ -5452,39 +5326,39 @@ impl eframe::App for FlowersApp {
                     ui.horizontal(|ui| {
                         let mut t = false;
                         if secondary_button(ui, p, "⬅").on_hover_text("Move left").clicked() {
-                            self.gates[i].kind.translate(-step, 0.0);
+                            self.nudge_gate(i, -step, 0.0);
                             t = true;
                         }
                         if secondary_button(ui, p, "➡").on_hover_text("Move right").clicked() {
-                            self.gates[i].kind.translate(step, 0.0);
+                            self.nudge_gate(i, step, 0.0);
                             t = true;
                         }
                         if secondary_button(ui, p, "⬆").on_hover_text("Move up").clicked() {
-                            self.gates[i].kind.translate(0.0, step);
+                            self.nudge_gate(i, 0.0, step);
                             t = true;
                         }
                         if secondary_button(ui, p, "⬇").on_hover_text("Move down").clicked() {
-                            self.gates[i].kind.translate(0.0, -step);
+                            self.nudge_gate(i, 0.0, -step);
                             t = true;
                         }
                         if secondary_button_hover(ui, p, "⟲", "Rotate -5°").clicked() {
                             let c = self.gates[i].kind.center();
-                            self.gates[i].kind.rotate_about(c, (-5.0f64).to_radians());
+                            self.rotate_gate(i, c, (-5.0f64).to_radians());
                             t = true;
                         }
                         if secondary_button_hover(ui, p, "⟳", "Rotate +5°").clicked() {
                             let c = self.gates[i].kind.center();
-                            self.gates[i].kind.rotate_about(c, (5.0f64).to_radians());
+                            self.rotate_gate(i, c, (5.0f64).to_radians());
                             t = true;
                         }
                         if secondary_button_hover(ui, p, "➕", "Enlarge").clicked() {
                             let c = self.gates[i].kind.center();
-                            self.gates[i].kind.scale_about(c, 1.1);
+                            self.scale_gate(i, c, 1.1);
                             t = true;
                         }
                         if secondary_button_hover(ui, p, "➖", "Shrink").clicked() {
                             let c = self.gates[i].kind.center();
-                            self.gates[i].kind.scale_about(c, 0.9);
+                            self.scale_gate(i, c, 0.9);
                             t = true;
                         }
                         if t {
@@ -5515,6 +5389,13 @@ impl eframe::App for FlowersApp {
         let p = self.palette();
         egui::SidePanel::right("populations")
             .default_width(330.0)
+            // Explicit frame (content spacing above/below) instead of the
+            // default panel frame, so the panel content has correct padding.
+            .frame(
+                egui::Frame::none()
+                    .fill(p.bg)
+                    .inner_margin(egui::Margin::same(10.0)),
+            )
             .show(ctx, |ui| {
                 // --- Population card ---
                 card_frame(p).show(ui, |ui| {
@@ -5728,6 +5609,247 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
         });
 }
 
+        // ----- Central panel: plot card -----
+        let p = self.palette();
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.current_fcs().is_none() {
+                card_frame(p).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Load an FCS file to begin")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        ui.label(
+                            egui::RichText::new("Use File ▸ Load FCS, or click Import FCS on the left.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        ui.add_space(8.0);
+                    });
+                });
+                return;
+            }
+            if self.x_param.is_none() || self.y_param.is_none() {
+                card_frame(p).show(ui, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Select X and Y parameters to plot")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        ui.add_space(8.0);
+                    });
+                });
+                return;
+            }
+            if self.plot_points.is_empty() {
+                self.update_plot_points();
+            }
+
+            let cfg = self.main_plot_cfg();
+
+            card_frame(p).show(ui, |ui| {
+                // --- Plot header: title + tools ---
+                let sample_name = self
+                    .current_sample
+                    .and_then(|i| self.samples.get(i))
+                    .map(|s| s.id.clone())
+                    .unwrap_or_default();
+                let comp_status = if self.gates.is_empty() {
+                    "no gates".to_string()
+                } else {
+                    format!("{} gate(s)", self.gates.len())
+                };
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(&sample_name)
+                                .strong()
+                                .color(p.ink),
+                        );
+                        ui.label(
+                            egui::RichText::new(comp_status)
+                                .small()
+                                .color(p.muted),
+                        );
+                    });
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            // Save plot (rightmost).
+                            if secondary_button(ui, p, "Save PNG").clicked() {
+                                let mut dlg = rfd::FileDialog::new().set_file_name("plot.png");
+                                for &(name, exts) in ImageFormat::dialog_filters() {
+                                    dlg = dlg.add_filter(name, exts);
+                                }
+                                if let Some(path) = dlg.save_file() {
+                                    self.export_image(&path);
+                                }
+                            }
+                            ui.add_space(6.0);
+                            // Clear / finish.
+                            if secondary_button(ui, p, "Clear").clicked() {
+                                // Cancel any in-progress draw.
+                                self.interact.drag_start = None;
+                                self.interact.drag_current = None;
+                            }
+                            ui.add_space(6.0);
+                            // Tool toggle group: select / rectangle / polygon.
+                            egui::Frame::none()
+                                .fill(p.soft)
+                                .stroke(egui::Stroke::new(1.0, p.border))
+                                .rounding(6.0)
+                                .inner_margin(egui::Margin::same(2.0))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        let rect_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Rect | NewGateType::Ellipse
+                                        );
+                                        let poly_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Polygon
+                                        );
+                                        let quad_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Quadrant
+                                        );
+                                        let line_active = matches!(
+                                            self.new_gate_type,
+                                            NewGateType::Bilinear
+                                        );
+                                        if tool_button(
+                                            ui,
+                                            p,
+                                            "Rectangle",
+                                            rect_active && !poly_active && !quad_active && !line_active,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Rect;
+                                        }
+                                        if tool_button(
+                                            ui,
+                                            p,
+                                            "Ellipse",
+                                            matches!(self.new_gate_type, NewGateType::Ellipse)
+                                                && !poly_active && !quad_active && !line_active,
+                                        )
+                                        .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Ellipse;
+                                        }
+                                        if tool_button(ui, p, "Polygon", poly_active)
+                                            .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Polygon;
+                                        }
+                                        if tool_button(ui, p, "Quadrant", quad_active)
+                                            .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Quadrant;
+                                        }
+                                        if tool_button(ui, p, "Bilinear", line_active)
+                                            .clicked()
+                                        {
+                                            self.new_gate_type = NewGateType::Bilinear;
+                                        }
+                                    });
+                                });
+                        },
+                    );
+                });
+                ui.add_space(8.0);
+
+                // --- Plot area ---
+                egui::ScrollArea::both().show(ui, |ui| {
+                    let mut inter = PlotInteraction {
+                        drag_start: self.interact.drag_start,
+                        drag_current: self.interact.drag_current,
+                        ..Default::default()
+                    };
+                    show_plot(ui, "scatter_plot", &cfg, &mut inter);
+
+                    let tol = 0.02
+                        * (self.x_range.1 - self.x_range.0)
+                            .abs()
+                            .max((self.y_range.1 - self.y_range.0).abs())
+                            .max(1.0);
+                    let outcome = drive_interact(
+                        &mut self.interact,
+                        &inter,
+                        &self.gates,
+                        self.selected_gate,
+                        self.new_gate_type,
+                        tol,
+                    );
+                    if let Some(outcome) = outcome {
+                        match outcome {
+                            InteractOutcome::Create { start, end } => {
+                                self.create_gate_from_drag(start, end)
+                            }
+                            InteractOutcome::Update { gate, kind } => {
+                                let old = self.gates.get(gate).map(|g| g.kind.clone());
+                                if gate < self.gates.len() {
+                                    self.gates[gate].kind = kind;
+                                }
+                                if let Some(old) = old {
+                                    let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
+                                    if let Some(new_kind) = new_kind {
+                                        self.commit_gate_edit(gate, &old, &new_kind);
+                                    }
+                                }
+                                self.recompute_populations();
+                            }
+                            InteractOutcome::Click(p) => {
+                                self.create_click_gate(p, false)
+                            }
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+
+                // --- Plot footer: hints + options ---
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Draw hints")
+                            .small()
+                            .color(p.muted),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("drag").small().strong().color(p.ink));
+                    ui.label(" to draw a gate  ");
+                    ui.label(egui::RichText::new("click").small().strong().color(p.ink));
+                    ui.label(" to place a quadrant/bilinear gate  ");
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.checkbox(
+                                &mut self.gradient,
+                                egui::RichText::new("density gradient").small().color(p.muted),
+                            );
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    self.pop_indices
+                                        .iter()
+                                        .map(|v| v.len())
+                                        .sum::<usize>()
+                                        .to_string(),
+                                )
+                                .small()
+                                .color(p.muted),
+                            );
+                            ui.label(" events drawn");
+                        },
+                    );
+                });
+            });
+        });
+
         // ----- Layout editor window -----
         self.layout_window(ctx);
 
@@ -5870,8 +5992,15 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
                                     }
                                 }
                                 InteractOutcome::Update { gate, kind } => {
-                                    if let Some(g) = self.gates.get_mut(gate) {
-                                        g.kind = kind;
+                                    let old = self.gates.get(gate).map(|g| g.kind.clone());
+                                    if gate < self.gates.len() {
+                                        self.gates[gate].kind = kind;
+                                    }
+                                    if let Some(old) = old {
+                                        let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
+                                        if let Some(new_kind) = new_kind {
+                                            self.commit_gate_edit(gate, &old, &new_kind);
+                                        }
                                     }
                                     self.recompute_populations();
                                 }
@@ -6027,6 +6156,47 @@ mod tests {
         app.redo();
         assert_eq!(app.gates.len(), 2);
         assert!(!app.can_redo());
+    }
+
+    #[test]
+    fn quadrant_move_keeps_all_four_wedges_in_sync() {
+        let mut app = FlowersApp::default();
+        for (i, quad) in [
+            Quadrant::UpperLeft,
+            Quadrant::UpperRight,
+            Quadrant::LowerLeft,
+            Quadrant::LowerRight,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let kind = GateKind::Quadrant {
+                x: 5.0,
+                y: 5.0,
+                quad,
+            };
+            app.push_gate(format!("Q{}", i), kind, None, 0, 1);
+        }
+        assert_eq!(app.gates.len(), 4);
+        for gate in &app.gates {
+            assert_eq!(gate.kind.quadrant_split(), Some([5.0, 5.0]));
+        }
+
+        // Move the first wedge (as a drag on its body / centre handle would).
+        let old = app.gates[0].kind.clone();
+        app.gates[0].kind = GateKind::Quadrant {
+            x: 7.0,
+            y: 5.0,
+            quad: Quadrant::UpperLeft,
+        };
+        let new_kind = app.gates[0].kind.clone();
+        app.commit_gate_edit(0, &old, &new_kind);
+
+        // The shared split must move for the whole group of four wedges.
+        assert_eq!(app.gates[0].kind.quadrant_split(), Some([7.0, 5.0]));
+        for gate in &app.gates[1..] {
+            assert_eq!(gate.kind.quadrant_split(), Some([7.0, 5.0]));
+        }
     }
 
     #[test]
@@ -6219,4 +6389,45 @@ mod tests {
         assert_eq!(poly[2], [8.0, 0.0]);
         assert_eq!(poly[3], [2.0, 0.0]);
     }
+
+    // Regression test for the plot / bottom gate-tools clipping bug: the
+    // central panel that hosts the plot must be declared *after* the bottom
+    // gate-tools panel, so egui reserves the gate-tools strip before the
+    // central area is computed. Otherwise the plot area is taller than the
+    // space left and the bottom of the plot is clipped by the gate tools.
+    #[test]
+    fn central_plot_panel_does_not_overlap_gate_editor() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+
+        fn run(ctx: &egui::Context, screen: egui::Rect) -> (egui::Rect, Option<egui::Rect>) {
+            let mut raw = egui::RawInput::default();
+            raw.screen_rect = Some(screen);
+            let mut central_rect: Option<egui::Rect> = None;
+            let mut bottom_rect: Option<egui::Rect> = None;
+            let _ = ctx.run(raw, |ctx| {
+                egui::TopBottomPanel::bottom("gate_editor")
+                    .resizable(true)
+                    .default_height(200.0)
+                    .show(ctx, |ui| {
+                        bottom_rect = Some(ui.min_rect());
+                        ui.label("gate tools");
+                    });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    central_rect = Some(ui.min_rect());
+                    ui.label("plot area");
+                });
+            });
+            (central_rect.unwrap(), bottom_rect)
+        }
+
+        let (central, bottom) = run(&ctx, screen);
+        let bottom = bottom.expect("bottom gate editor panel must be present");
+        assert!(
+            central.max.y <= bottom.min.y,
+            "central plot panel must end above the bottom gate tools panel \
+             (central={central:?}, bottom={bottom:?})"
+        );
+    }
+
 }
