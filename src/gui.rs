@@ -103,6 +103,18 @@ fn card_frame(p: Palette) -> egui::Frame {
         .inner_margin(egui::Margin::same(10.0))
 }
 
+/// Padding between the window edge and every top-level panel's card.
+const PANEL_MARGIN: f32 = 10.0;
+
+/// The shared frame for every top-level panel (header, sidebars, bottom
+/// editor and the central plot card), so their cards all sit the same
+/// distance from the window edges.
+fn panel_frame(p: Palette) -> egui::Frame {
+    egui::Frame::none()
+        .fill(p.bg)
+        .inner_margin(egui::Margin::same(PANEL_MARGIN))
+}
+
 /// A card header: bold title on the left, optional muted subtitle / trailing
 /// content on the right, followed by a hairline rule.
 fn card_head(ui: &mut egui::Ui, p: Palette, title: &str, trailing: impl FnOnce(&mut egui::Ui)) {
@@ -4516,8 +4528,12 @@ fn gate_tree_ui(
     actions
 }
 
-impl eframe::App for FlowersApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl FlowersApp {
+    /// Draw the whole application UI for one frame.
+    ///
+    /// Kept separate from [`eframe::App::update`] so tests can drive the real
+    /// layout through an [`egui::Context`] without an `eframe::Frame`.
+    fn draw(&mut self, ctx: &egui::Context) {
         // Apply the selected theme before drawing anything this frame.
         ctx.set_visuals(match self.theme {
             Theme::Dark => egui::Visuals::dark(),
@@ -4576,7 +4592,7 @@ impl eframe::App for FlowersApp {
         // ----- Top header: brand + menu bar -----
         let p = self.palette();
         egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::none().fill(p.bg).inner_margin(egui::Margin::same(6.0)))
+            .frame(panel_frame(p))
             .show(ctx, |ui| {
                 header_bar(ui, p, |ui| {
                     // File dropdown.
@@ -4717,6 +4733,7 @@ impl eframe::App for FlowersApp {
         let p = self.palette();
         egui::SidePanel::left("sidebar")
             .default_width(280.0)
+            .frame(panel_frame(p))
             .show(ctx, |ui| {
                 // --- Samples card ---
                 card_frame(p).show(ui, |ui| {
@@ -5032,13 +5049,9 @@ impl eframe::App for FlowersApp {
         egui::TopBottomPanel::bottom("gate_editor")
             .resizable(true)
             .default_height(200.0)
-            // Explicit frame (content spacing above/below) instead of the
-            // default panel frame, so the editor has correct padding.
-            .frame(
-                egui::Frame::none()
-                    .fill(p.bg)
-                    .inner_margin(egui::Margin::same(10.0)),
-            )
+            // Shared panel frame so the editor card sits the same distance
+            // from the window edges as every other card.
+            .frame(panel_frame(p))
             .show(ctx, |ui| {
                 let sel = self.selected_gate;
                 card_frame(p).show(ui, |ui| {
@@ -5389,13 +5402,9 @@ impl eframe::App for FlowersApp {
         let p = self.palette();
         egui::SidePanel::right("populations")
             .default_width(330.0)
-            // Explicit frame (content spacing above/below) instead of the
-            // default panel frame, so the panel content has correct padding.
-            .frame(
-                egui::Frame::none()
-                    .fill(p.bg)
-                    .inner_margin(egui::Margin::same(10.0)),
-            )
+            // Shared panel frame so the population cards sit the same
+            // distance from the window edges as every other card.
+            .frame(panel_frame(p))
             .show(ctx, |ui| {
                 // --- Population card ---
                 card_frame(p).show(ui, |ui| {
@@ -5611,7 +5620,7 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
 
         // ----- Central panel: plot card -----
         let p = self.palette();
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().frame(panel_frame(p)).show(ctx, |ui| {
             if self.current_fcs().is_none() {
                 card_frame(p).show(ui, |ui| {
                     ui.vertical_centered(|ui| {
@@ -5765,7 +5774,13 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
                 ui.add_space(8.0);
 
                 // --- Plot area ---
-                egui::ScrollArea::both().show(ui, |ui| {
+                // Reserve room for the footer row before the scroll area
+                // claims the remaining height. Without this the plot fills
+                // every pixel left in the card and pushes the footer (and
+                // the card's bottom border) past the bottom of the window.
+                let footer_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                let plot_height = (ui.available_height() - footer_height - 8.0).max(0.0);
+                egui::ScrollArea::both().max_height(plot_height).show(ui, |ui| {
                     let mut inter = PlotInteraction {
                         drag_start: self.interact.drag_start,
                         drag_current: self.interact.drag_current,
@@ -5845,6 +5860,16 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
                             );
                             ui.label(" events drawn");
                         },
+                    );
+                });
+                // Regression-test hook: remember the plot card's content and
+                // clip rects so tests can assert the card is not cut off at
+                // the bottom of the central panel.
+                #[cfg(test)]
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(
+                        egui::Id::new("central_plot_card_rects"),
+                        (ui.min_rect(), ui.clip_rect()),
                     );
                 });
             });
@@ -6054,6 +6079,12 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
         // Record once per frame (coalescing drags into a single step).
         let pointer_down = ctx.input(|i| i.pointer.any_down());
         self.record_history(pointer_down);
+    }
+}
+
+impl eframe::App for FlowersApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.draw(ctx);
     }
 }
 
@@ -6275,6 +6306,46 @@ mod tests {
             }
         }
         std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn loaded_plot_card_is_not_clipped_by_the_window_bottom() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("plot_card_clipping.fcs");
+        write_fcs(&fcs_path, 4, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+
+        let ctx = egui::Context::default();
+        let screen =
+            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(screen);
+        // Run a few frames so the resizable bottom panel settles on its
+        // content height before checking the central plot card.
+        for _ in 0..3 {
+            let _ = ctx.run(raw.clone(), |ctx| app.draw(ctx));
+        }
+
+        let (content, clip) = ctx
+            .data(|d| {
+                d.get_temp::<(egui::Rect, egui::Rect)>(egui::Id::new(
+                    "central_plot_card_rects",
+                ))
+            })
+            .expect("plot card layout should be recorded");
+        assert!(
+            content.min.y >= clip.min.y - 0.5 && content.max.y <= clip.max.y + 0.5,
+            "plot card content must fit inside the central panel without being \
+             clipped at the bottom (content={content:?}, clip={clip:?})"
+        );
+        assert!(
+            content.min.x >= clip.min.x - 0.5 && content.max.x <= clip.max.x + 0.5,
+            "plot card content must fit inside the central panel horizontally \
+             (content={content:?}, clip={clip:?})"
+        );
     }
 
     #[test]
