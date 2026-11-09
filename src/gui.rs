@@ -1247,6 +1247,41 @@ fn compute_gate_populations(
     result
 }
 
+/// Percentages for a gate: relative to its parent population (when it has one)
+/// and relative to the whole sample.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GatePercentages {
+    /// Percentage of the parent population; `None` for a root gate.
+    of_parent: Option<f64>,
+    /// Percentage of all events in the sample.
+    of_total: f64,
+}
+
+/// Computes both percentages for a gate population.
+fn gate_percentages(count: usize, parent_count: Option<usize>, total: usize) -> GatePercentages {
+    fn pct(part: usize, whole: usize) -> f64 {
+        if whole == 0 {
+            0.0
+        } else {
+            part as f64 / whole as f64 * 100.0
+        }
+    }
+    GatePercentages {
+        of_parent: parent_count.map(|pc| pct(count, pc)),
+        of_total: pct(count, total),
+    }
+}
+
+/// Compact label showing a gate's percentage(s): one denominator for root
+/// gates, both parent and total for nested gates.
+fn gate_percentage_label(count: usize, parent_count: Option<usize>, total: usize) -> String {
+    let pcts = gate_percentages(count, parent_count, total);
+    match pcts.of_parent {
+        Some(of_parent) => format!("{of_parent:.1}% parent, {:.1}% total", pcts.of_total),
+        None => format!("{:.1}% total", pcts.of_total),
+    }
+}
+
 /// Children lists from the parent pointers (for the hierarchy view).
 fn children_map(gates: &[GateDef]) -> Vec<Vec<usize>> {
     let mut children = vec![Vec::new(); gates.len()];
@@ -1962,6 +1997,9 @@ pub struct FlowersApp {
     // Quit confirmation.
     /// True while the "unsaved changes" quit confirmation popup is open.
     quit_confirm: bool,
+    /// Set when the user explicitly chooses to close without saving, so the
+    /// window-close handler lets the close through instead of prompting again.
+    allow_close: bool,
     /// True when the current document differs from the last saved workspace.
     dirty: bool,
 
@@ -2011,6 +2049,7 @@ impl Default for FlowersApp {
             status: "Ready — load an FCS file".to_string(),
             pending_apply_prompt: None,
             quit_confirm: false,
+            allow_close: false,
             dirty: false,
             history: Vec::new(),
             history_idx: 0,
@@ -2488,8 +2527,13 @@ impl FlowersApp {
         if !changed || pointer_down {
             return;
         }
-        // The document differs from the last saved state.
-        self.dirty = true;
+        // The initial snapshot (and the baseline after New / Load Workspace) is
+        // not an edit, so it must not mark a clean workspace as dirty.
+        let is_baseline = self.history.is_empty();
+        if !is_baseline {
+            // The document differs from the last saved state.
+            self.dirty = true;
+        }
         // Drop any redo entries and append the new state.
         self.history.truncate(self.history_idx + 1);
         self.history.push(current);
@@ -4459,16 +4503,11 @@ fn gate_tree_ui(
         actions: &mut Vec<TreeAction>,
     ) {
         let gate = &gates[node];
-        let parent_count = gate
-            .parent
-            .and_then(|p| counts.get(p).copied())
-            .unwrap_or(total);
         let count = counts.get(node).copied().unwrap_or(0);
-        let pct = if parent_count == 0 {
-            0.0
-        } else {
-            count as f64 / parent_count as f64 * 100.0
-        };
+        let parent_count = gate.parent.and_then(|p| counts.get(p).copied());
+        // A nested gate gets both denominators: its parent population and the
+        // whole sample. A root gate has no parent, so only show the total.
+        let pct_label = gate_percentage_label(count, parent_count, total);
 
         ui.horizontal(|ui| {
             ui.add_space((depth as f32) * 12.0);
@@ -4479,7 +4518,13 @@ fn gate_tree_ui(
             swatch.show(ui, |ui| {
                 ui.label(" ");
             });
-            let label = format!("{}  [{}]  {} ({:.1}%)", gate.name, gate.kind.label(), count, pct);
+            let label = format!(
+                "{}  [{}]  {} ({})",
+                gate.name,
+                gate.kind.label(),
+                count,
+                pct_label
+            );
             if ui
                 .selectable_label(selected == Some(node), label)
                 .clicked()
@@ -4529,6 +4574,20 @@ fn gate_tree_ui(
 }
 
 impl FlowersApp {
+    /// Intercepts the OS window's close button and routes it through the
+    /// unsaved-changes confirmation. The close is canceled for this frame;
+    /// the dialog then either saves, closes explicitly, or lets the user
+    /// cancel. `allow_close` lets an explicit "quit without saving" through.
+    fn handle_window_close_request(&mut self, ctx: &egui::Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.dirty && !self.allow_close {
+            self.quit_confirm = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+    }
+
     /// Draw the whole application UI for one frame.
     ///
     /// Kept separate from [`eframe::App::update`] so tests can drive the real
@@ -4540,35 +4599,50 @@ impl FlowersApp {
             Theme::Light => egui::Visuals::light(),
         });
 
+        // The window's X button must go through the same unsaved-changes
+        // prompt as File ▸ Quit.
+        self.handle_window_close_request(ctx);
+
         // ----- Quit confirmation -----
         // Shown when the user asks to quit with unsaved changes; offers to save
         // first, quit without saving, or cancel.
         if self.quit_confirm {
-            egui::Window::new("Quit")
+            egui::Window::new("Unsaved changes")
                 .collapsible(false)
+                .resizable(false)
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.vertical_centered(|ui| {
-                        ui.label("You have unsaved changes. Save your workspace before quitting.");
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.button("Save Workspace…").clicked() {
-                            self.quit_confirm = false;
-                            if let Some(path) = rfd::FileDialog::new()
-                                .add_filter("Flowers workspace", &["wsp", "json"])
-                                .set_file_name("workspace.wsp")
-                                .save_file()
-                            {
-                                self.save_workspace(&path);
+                        ui.label("You have unsaved changes.");
+                        ui.label("Save your workspace before closing the window?");
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Save Workspace…").clicked() {
+                                if let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("Flowers workspace", &["wsp", "json"])
+                                    .set_file_name("workspace.wsp")
+                                    .save_file()
+                                {
+                                    self.save_workspace(&path);
+                                    // Keep the dialog open if saving failed so
+                                    // the user can retry or quit explicitly.
+                                    if !self.dirty {
+                                        self.quit_confirm = false;
+                                        self.allow_close = true;
+                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                                    }
+                                }
+                            }
+                            if ui.button("Quit Without Saving").clicked() {
+                                self.quit_confirm = false;
+                                self.allow_close = true;
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                             }
-                        }
-                        if ui.button("Quit").clicked() {
-                            self.quit_confirm = false;
-                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                        }
-                        if ui.button("Cancel").clicked() {
-                            self.quit_confirm = false;
-                        }
+                            if ui.button("Cancel").clicked() {
+                                self.quit_confirm = false;
+                            }
+                        });
                     });
                 });
         }
@@ -4662,6 +4736,7 @@ impl FlowersApp {
                         if ui.button("Quit").clicked() {
                             ui.close_menu();
                             if self.dirty {
+                                self.allow_close = false;
                                 self.quit_confirm = true;
                             } else {
                                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -5382,11 +5457,16 @@ impl FlowersApp {
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
+                    let count = self.pop_indices.get(i).map(|v| v.len()).unwrap_or(0);
+                    let parent_count = self.gates[i]
+                        .parent
+                        .and_then(|p| self.pop_indices.get(p).map(|v| v.len()));
+                    let total = self.current_fcs().map(|f| f.event_count).unwrap_or(0);
+                    let pct_text = gate_percentage_label(count, parent_count, total);
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(format!(
-                                "Events in gate: {}",
-                                self.pop_indices.get(i).map(|v| v.len()).unwrap_or(0)
+                                "Events in gate: {count} ({pct_text})"
                             ))
                             .small()
                             .color(p.muted),
@@ -5420,20 +5500,15 @@ impl FlowersApp {
                                 .and_then(|p| counts.get(p).copied())
                                 .unwrap_or(total);
                             let c = counts.get(i).copied().unwrap_or(0);
-                            let pp = if parent_count == 0 {
-                                0.0
-                            } else {
-                                c as f64 / parent_count as f64 * 100.0
-                            };
-                            let pt = if total == 0 { 0.0 } else { c as f64 / total as f64 * 100.0 };
+                            let pcts = gate_percentages(c, Some(parent_count), total);
                             (
                                 gate.name.clone(),
                                 gate.parent
                                     .map(|p| self.gates[p].name.clone())
                                     .unwrap_or_else(|| "(root)".to_string()),
                                 c,
-                                pp,
-                                pt,
+                                pcts.of_parent.unwrap_or(0.0),
+                                pcts.of_total,
                             )
                         }
                         _ => {
@@ -5523,34 +5598,18 @@ impl FlowersApp {
                         );
                     } else {
                         egui::Grid::new("cross_sample")
-                            .num_columns(4)
+                            .num_columns(5)
                             .spacing([8.0, 4.0])
                             .striped(true)
                             .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new("Sample")
-                                        .small()
-                                        .strong()
-                                        .color(p.muted),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Pop")
-                                        .small()
-                                        .strong()
-                                        .color(p.muted),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Count")
-                                        .small()
-                                        .strong()
-                                        .color(p.muted),
-                                );
-                                ui.label(
-                                    egui::RichText::new("%")
-                                        .small()
-                                        .strong()
-                                        .color(p.muted),
-                                );
+                                for heading in ["Sample", "Pop", "Count", "% total", "% parent"] {
+                                    ui.label(
+                                        egui::RichText::new(heading)
+                                            .small()
+                                            .strong()
+                                            .color(p.muted),
+                                    );
+                                }
                                 ui.end_row();
                                 for (sample_idx, sample) in self.samples.iter().enumerate() {
                                     let pops = compute_gate_populations(
@@ -5561,11 +5620,18 @@ impl FlowersApp {
                                     );
                                     for (i, gate) in self.gates.iter().enumerate() {
                                         let c = pops.get(i).map(|v| v.len()).unwrap_or(0);
-                                        let pct = if sample.fcs.event_count == 0 {
-                                            0.0
-                                        } else {
-                                            c as f64 / sample.fcs.event_count as f64 * 100.0
-                                        };
+                                        let parent_count = gate
+                                            .parent
+                                            .and_then(|p| pops.get(p).map(|v| v.len()));
+                                        let pcts = gate_percentages(
+                                            c,
+                                            parent_count,
+                                            sample.fcs.event_count,
+                                        );
+                                        let parent_pct = pcts
+                                            .of_parent
+                                            .map(|v| format!("{v:.1}%"))
+                                            .unwrap_or_else(|| "—".to_string());
                                         ui.label(
                                             egui::RichText::new(&sample.id).small(),
                                         );
@@ -5576,8 +5642,10 @@ impl FlowersApp {
                                             egui::RichText::new(format!("{c}")).small(),
                                         );
                                         ui.label(
-                                            egui::RichText::new(format!("{pct:.1}%")).small(),
+                                            egui::RichText::new(format!("{:.1}%", pcts.of_total))
+                                                .small(),
                                         );
+                                        ui.label(egui::RichText::new(parent_pct).small());
                                         ui.end_row();
                                     }
                                 }
@@ -6117,6 +6185,79 @@ mod tests {
     }
 
     #[test]
+    fn gate_percentages_use_parent_and_total_denominators() {
+        let nested = gate_percentages(50, Some(200), 1000);
+        assert!((nested.of_parent.unwrap() - 25.0).abs() < 1e-9);
+        assert!((nested.of_total - 5.0).abs() < 1e-9);
+
+        let root = gate_percentages(200, None, 1000);
+        assert!(root.of_parent.is_none());
+        assert!((root.of_total - 20.0).abs() < 1e-9);
+
+        // Empty denominators are reported as zero rather than NaN.
+        let empty = gate_percentages(0, Some(0), 0);
+        assert_eq!(empty.of_parent, Some(0.0));
+        assert_eq!(empty.of_total, 0.0);
+
+        // Nested gates display both denominators; root gates show only total.
+        assert_eq!(
+            gate_percentage_label(50, Some(200), 1000),
+            "25.0% parent, 5.0% total"
+        );
+        assert_eq!(gate_percentage_label(200, None, 1000), "20.0% total");
+    }
+
+    #[test]
+    fn nested_gate_population_reports_parent_and_total_percentages() {
+        let data = array![
+            [0.0_f32, 0.0],
+            [1.0, 1.0],
+            [2.0, 2.0],
+            [10.0, 10.0],
+        ];
+        let rect = |min, max| GateKind::Rect {
+            x_min: min,
+            x_max: max,
+            y_min: min,
+            y_max: max,
+            angle: 0.0,
+        };
+        let gates = vec![
+            GateDef {
+                name: "Live".into(),
+                x_idx: 0,
+                y_idx: 1,
+                parent: None,
+                kind: rect(-0.5, 5.0),
+                color: egui::Color32::WHITE,
+                owner: None,
+                apply_to_all: true,
+            },
+            GateDef {
+                name: "Sub".into(),
+                x_idx: 0,
+                y_idx: 1,
+                parent: Some(0),
+                kind: rect(0.5, 1.5),
+                color: egui::Color32::WHITE,
+                owner: None,
+                apply_to_all: true,
+            },
+        ];
+
+        let pops = compute_gate_populations(&data, &gates, None, false);
+        assert_eq!(pops[0].len(), 3);
+        assert_eq!(pops[1].len(), 1);
+
+        let live = gate_percentages(pops[0].len(), None, data.nrows());
+        assert!((live.of_total - 75.0).abs() < 1e-9);
+
+        let sub = gate_percentages(pops[1].len(), Some(pops[0].len()), data.nrows());
+        assert!((sub.of_parent.unwrap() - (1.0 / 3.0) * 100.0).abs() < 1e-9);
+        assert!((sub.of_total - 25.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn default_axes_prefer_fsc_h_and_ssc_h() {
         let fcs = fcs_with(&["FSC-A", "SSC-A", "FSC-H", "SSC-H", "CD3"]);
         assert_eq!(default_param_pair(&fcs), (2, 3));
@@ -6459,6 +6600,77 @@ mod tests {
         assert_eq!(poly[1], [8.0, 5.0]);
         assert_eq!(poly[2], [8.0, 0.0]);
         assert_eq!(poly[3], [2.0, 0.0]);
+    }
+
+    fn close_request_input() -> egui::RawInput {
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1400.0, 900.0),
+        ));
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        raw
+    }
+
+    fn close_canceled(output: &egui::FullOutput) -> bool {
+        output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::CancelClose)
+    }
+
+    #[test]
+    fn closing_with_unsaved_changes_prompts_and_cancels_the_close() {
+        let ctx = egui::Context::default();
+        let mut app = FlowersApp::default();
+        app.dirty = true;
+
+        let output = ctx.run(close_request_input(), |ctx| app.draw(ctx));
+
+        assert!(app.quit_confirm, "the save confirmation should be open");
+        assert!(
+            close_canceled(&output),
+            "the window must not close before the user chooses an option"
+        );
+    }
+
+    #[test]
+    fn closing_a_clean_workspace_does_not_prompt() {
+        let ctx = egui::Context::default();
+        let mut app = FlowersApp::default();
+
+        // The very first frame records the baseline snapshot for undo but must
+        // not count as an edit.
+        let mut raw = close_request_input();
+        raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.clear();
+        let _ = ctx.run(raw, |ctx| app.draw(ctx));
+        assert!(!app.dirty, "an untouched workspace must start clean");
+
+        let output = ctx.run(close_request_input(), |ctx| app.draw(ctx));
+
+        assert!(!app.quit_confirm);
+        assert!(!close_canceled(&output), "a clean workspace should close");
+    }
+
+    #[test]
+    fn quit_without_saving_allows_a_later_close_request() {
+        let ctx = egui::Context::default();
+        let mut app = FlowersApp::default();
+        app.dirty = true;
+        // This is the state the "Quit Without Saving" button sets.
+        app.quit_confirm = false;
+        app.allow_close = true;
+
+        let output = ctx.run(close_request_input(), |ctx| app.draw(ctx));
+
+        assert!(!app.quit_confirm);
+        assert!(
+            !close_canceled(&output),
+            "the close must go through after the user opts out of saving"
+        );
     }
 
     // Regression test for the plot / bottom gate-tools clipping bug: the

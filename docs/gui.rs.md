@@ -6,7 +6,7 @@
 ## Key Responsibilities
 - **Data Visualization**: Rendering high-density scatter plots with support for linear/logarithmic scales, density gradients, and contour views.
 - **Gating Toolkit**: Providing tools to draw and manipulate various gate shapes (rectangles, ellipses, polygons, quadrants, and bilinear lines).
-- **Population Management**: Managing a hierarchical tree of gated populations and calculating the corresponding event counts and percentages.
+- **Population Management**: Managing a hierarchical tree of gated populations and calculating the corresponding event counts and percentages, both relative to the parent population and relative to all events in the sample.
 - **Layout Editing**: A free-form canvas where users can arrange, resize, and style plot panels for final figure export.
 - **State & Undo/Redo**: Tracking the application state and providing a snapshot-based undo/redo mechanism.
 - **Export**: Exporting the final layouts as images (SVG, PNG, JPEG, TIFF) and exporting population statistics as CSV.

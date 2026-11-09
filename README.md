@@ -23,6 +23,7 @@
 | **Cross-sample gating** | Apply the same gate set to every loaded FCS file, with a per-file prompt |
 | **Undo / Redo** | `Ctrl+Z` / `Ctrl+Shift+Z` across gating, view settings and the layout editor |
 | **Workspaces** | Save / load a `.wsp` project (file list + gates + view + layout) from the File menu |
+| **Unsaved-changes guard** | Closing the window prompts to save, quit without saving, or cancel |
 | **Detached population window** | Pop a population into its own window with the full plotting/gating toolkit |
 | **Themes** | Switch the whole application between a dark and light theme |
 | **CSV reports** | Export per-population counts, percentages, and gate summaries |

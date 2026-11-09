@@ -217,7 +217,10 @@ Gates are organised in a tree shown in the right panel:
 - Click **✖** to delete a gate (children are re-parented to the deleted gate's
   parent).
 
-Counts and percentages are shown for each gate relative to its parent.
+Counts are shown for each gate together with two percentages: the share of
+**all events** in the sample (`% total`) and, for nested gates, the share of
+the **parent population** (`% parent`). Root gates show only `% total`; child
+gates show both.
 
 ---
 
@@ -311,7 +314,9 @@ the gate editor:
 - **Unchecked**: the gate applies only to the sample it was created on (shown as
   the "owner sample" next to the checkbox).
 
-The cross-sample table and CSV export respect both switches.
+The cross-sample table and CSV export respect both switches. The table reports
+each population's `% total` and, for nested gates, `% parent` alongside the
+event count.
 
 ---
 
@@ -409,6 +414,11 @@ referenced FCS file has moved or been deleted, it is skipped and reported in the
 status line; the rest of the workspace still loads.
 
 After loading, undo/redo starts fresh from the loaded state.
+
+If you try to close the window (or choose **File ▸ Quit**) while the workspace
+has unsaved changes, a centered confirmation dialog appears. From there you can
+**Save Workspace…** and close, **Quit Without Saving**, or **Cancel** and return
+to the analysis.
 
 ---
 
