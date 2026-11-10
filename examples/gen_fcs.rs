@@ -50,7 +50,7 @@ fn main() {
     // Two clusters: cluster A low on all channels; cluster B high on FL1/FL2.
     let mut rng = 42u64;
     for _ in 0..event_count {
-        let cluster_b = (rng % 2) == 0;
+        let cluster_b = rng.is_multiple_of(2);
         rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
         for _j in 0..param_count {
             let base = if cluster_b { 2.5 } else { 0.5 };

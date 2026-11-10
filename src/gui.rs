@@ -98,7 +98,7 @@ impl Palette {
 fn card_frame(p: Palette) -> egui::Frame {
     egui::Frame::none()
         .fill(p.surface)
-        .stroke(egui::Stroke::new(1.0, p.border))
+        .stroke(egui::Stroke::new(1.0_f32, p.border))
         .rounding(10.0)
         .inner_margin(egui::Margin::same(10.0))
 }
@@ -161,7 +161,7 @@ fn secondary_button(ui: &mut egui::Ui, p: Palette, text: &str) -> egui::Response
             egui::RichText::new(text).small().color(p.ink),
         )
         .fill(p.soft)
-        .stroke(egui::Stroke::new(1.0, p.border))
+        .stroke(egui::Stroke::new(1.0_f32, p.border))
         .rounding(6.0),
     )
 }
@@ -177,7 +177,7 @@ fn secondary_button_hover(
         egui::RichText::new(text).small().color(p.ink),
     )
     .fill(p.soft)
-    .stroke(egui::Stroke::new(1.0, p.border))
+    .stroke(egui::Stroke::new(1.0_f32, p.border))
     .rounding(6.0);
     ui.add(button).on_hover_text(hover)
 }
@@ -190,9 +190,9 @@ fn tool_button(ui: &mut egui::Ui, p: Palette, label: &str, active: bool) -> egui
         .color(if active { p.teal } else { p.muted });
     let btn = egui::Button::new(text).rounding(6.0);
     if active {
-        ui.add_enabled(false, btn.fill(p.teal_light).stroke(egui::Stroke::new(1.0, p.teal)))
+        ui.add_enabled(false, btn.fill(p.teal_light).stroke(egui::Stroke::new(1.0_f32, p.teal)))
     } else {
-        ui.add(btn.fill(p.soft).stroke(egui::Stroke::new(1.0, p.border)))
+        ui.add(btn.fill(p.soft).stroke(egui::Stroke::new(1.0_f32, p.border)))
     }
 }
 
@@ -919,7 +919,7 @@ fn draw_preview_histogram(
     const NBINS: usize = 8;
     let n = NBINS as f32;
     let bin_w = area.width() / n;
-    let mut counts = vec![0u32; NBINS];
+    let mut counts = [0u32; NBINS];
     for p in pts {
         let i = (p[0].clamp(0.0, 1.0) * n) as usize;
         counts[i.min(NBINS - 1)] += 1;
@@ -1118,19 +1118,18 @@ fn drive_interact(
     tol: f64,
 ) -> Option<InteractOutcome> {
     // Keep the in-progress creation rectangle up to date.
-    if it.drag_start.is_some() {
-        if let Some(p) = inter.pointer {
+    if it.drag_start.is_some()
+        && let Some(p) = inter.pointer {
             it.drag_current = Some(p);
         }
-    }
 
     let mut outcome = None;
 
     // A drag just started: choose manipulation vs. creation.
     if let Some(start) = inter.started {
         let mut creating = true;
-        if let Some(gi) = selected {
-            if let Some(gate) = gates.get(gi) {
+        if let Some(gi) = selected
+            && let Some(gate) = gates.get(gi) {
                 if let Some(h) = nearest_handle(&gate.kind, start, tol) {
                     it.manip = Some(ManipSession {
                         gate: gi,
@@ -1149,7 +1148,6 @@ fn drive_interact(
                     creating = false;
                 }
             }
-        }
         if creating {
             it.drag_start = Some(start);
             it.drag_current = Some(start);
@@ -1165,20 +1163,18 @@ fn drive_interact(
         }
         it.drag_start = None;
         it.drag_current = None;
-    } else if let Some(m) = &it.manip {
-        if let Some(cur) = inter.pointer {
+    } else if let Some(m) = &it.manip
+        && let Some(cur) = inter.pointer {
             outcome = Some(InteractOutcome::Update {
                 gate: m.gate,
                 kind: apply_manipulation(&m.snapshot, &m.target, m.start, cur),
             });
         }
-    }
 
-    if let Some(p) = inter.clicked {
-        if matches!(new_type, NewGateType::Quadrant | NewGateType::Bilinear) {
+    if let Some(p) = inter.clicked
+        && matches!(new_type, NewGateType::Quadrant | NewGateType::Bilinear) {
             outcome = Some(InteractOutcome::Click(p));
         }
-    }
 
     outcome
 }
@@ -1286,11 +1282,10 @@ fn gate_percentage_label(count: usize, parent_count: Option<usize>, total: usize
 fn children_map(gates: &[GateDef]) -> Vec<Vec<usize>> {
     let mut children = vec![Vec::new(); gates.len()];
     for (i, gate) in gates.iter().enumerate() {
-        if let Some(p) = gate.parent {
-            if p < gates.len() {
+        if let Some(p) = gate.parent
+            && p < gates.len() {
                 children[p].push(i);
             }
-        }
     }
     children
 }
@@ -1449,14 +1444,13 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
 
     // Contour segments.
     let mut contour_paths: Vec<[ [f64; 2]; 2 ]> = Vec::new();
-    if matches!(cfg.view, ViewMode::Contour) {
-        if let Some(g) = grid.as_ref() {
+    if matches!(cfg.view, ViewMode::Contour)
+        && let Some(g) = grid.as_ref() {
             let max_d = g.max();
             for level in crate::plot::contour_levels(max_d, cfg.contour_levels) {
                 contour_paths.extend(crate::plot::contour_segments(g, level));
             }
         }
-    }
     let contour_color = egui::Color32::from_rgb(30, 110, 130);
 
     // Histogram bars (for Histogram view mode).
@@ -1657,8 +1651,8 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
         });
 
     // Set the mouse cursor based on which handle (if any) is hovered.
-    if cfg.interactive {
-        if let Some(ptr) = inter.pointer {
+    if cfg.interactive
+        && let Some(ptr) = inter.pointer {
             let span = (cfg.x_range.1 - cfg.x_range.0)
                 .abs()
                 .max((cfg.y_range.1 - cfg.y_range.0).abs())
@@ -1687,7 +1681,6 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
                 ui.ctx().set_cursor_icon(cursor);
             }
         }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3461,8 +3454,8 @@ impl FlowersApp {
         });
 
         // Manipulation buttons for the gate selected inside the popout.
-        if let Some(gi) = self.popout.selected_gate {
-            if gi < self.gates.len() {
+        if let Some(gi) = self.popout.selected_gate
+            && gi < self.gates.len() {
                 let span = (self.popout.x_range.1 - self.popout.x_range.0)
                     .abs()
                     .max((self.popout.y_range.1 - self.popout.y_range.0).abs())
@@ -3512,7 +3505,6 @@ impl FlowersApp {
                     }
                 });
             }
-        }
     }
 
     // -- rendering helpers --------------------------------------------------
@@ -4062,8 +4054,8 @@ impl FlowersApp {
         if !down {
             self.layout_drag = None;
         }
-        if down && self.layout_drag.is_none() {
-            if let Some(p) = pointer {
+        if down && self.layout_drag.is_none()
+            && let Some(p) = pointer {
                 // Only clear/select from canvas clicks; ignore clicks on
                 // toolbar buttons (which lie outside the canvas rect).
                 if response.rect.contains(p) {
@@ -4102,10 +4094,9 @@ impl FlowersApp {
                     }
                 }
             }
-        }
         // Apply the manipulation.
-        if let Some(drag) = self.layout_drag {
-            if let Some(p) = pointer {
+        if let Some(drag) = self.layout_drag
+            && let Some(p) = pointer {
                 let local = egui::pos2(p.x - origin.x, p.y - origin.y);
                 if let Some(panel) = self.layout_panels.get_mut(drag.panel) {
                     if drag.resize {
@@ -4117,7 +4108,6 @@ impl FlowersApp {
                     }
                 }
             }
-        }
 
         // Draw panels back-to-front.
         for (i, panel) in self.layout_panels.iter().enumerate() {
@@ -4246,7 +4236,7 @@ impl FlowersApp {
                                         .color(p.ink),
                                 )
                                 .fill(p.soft)
-                                .stroke(egui::Stroke::new(1.0, p.border))
+                                .stroke(egui::Stroke::new(1.0_f32, p.border))
                                 .rounding(6.0),
                             )
                             .clicked()
@@ -4260,23 +4250,20 @@ impl FlowersApp {
                         ui.add(
                             egui::DragValue::new(&mut self.layout_columns).range(1..=4),
                         );
-                        if secondary_button(ui, p, "Bring to front").clicked() {
-                            if let Some(i) = self.layout_selected {
-                                if i < self.layout_panels.len() {
+                        if secondary_button(ui, p, "Bring to front").clicked()
+                            && let Some(i) = self.layout_selected
+                                && i < self.layout_panels.len() {
                                     let p = self.layout_panels.remove(i);
                                     self.layout_panels.push(p);
                                     self.layout_selected = Some(self.layout_panels.len() - 1);
                                 }
-                            }
-                        }
-                        if secondary_button(ui, p, "Delete").clicked() {
-                            if let Some(i) = self.layout_selected {
+                        if secondary_button(ui, p, "Delete").clicked()
+                            && let Some(i) = self.layout_selected {
                                 if i < self.layout_panels.len() {
                                     self.layout_panels.remove(i);
                                 }
                                 self.layout_selected = None;
                             }
-                        }
                         if secondary_button(ui, p, "Clear").clicked() {
                             self.layout_panels.clear();
                             self.layout_selected = None;
@@ -4284,15 +4271,14 @@ impl FlowersApp {
                     });
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Export:").small().color(p.muted));
-                        if secondary_button(ui, p, "SVG…").clicked() {
-                            if let Some(path) = rfd::FileDialog::new()
+                        if secondary_button(ui, p, "SVG…").clicked()
+                            && let Some(path) = rfd::FileDialog::new()
                                 .add_filter("SVG", &["svg"])
                                 .set_file_name("layout.svg")
                                 .save_file()
                             {
                                 self.export_layout(&path);
                             }
-                        }
                         if secondary_button(ui, p, "Image…").clicked() {
                             let mut dlg = rfd::FileDialog::new().set_file_name("layout.png");
                             for &(name, exts) in ImageFormat::dialog_filters() {
@@ -4323,8 +4309,8 @@ impl FlowersApp {
                     });
 
                     // Per-axis label styling for the selected panel.
-                    if let Some(i) = self.layout_selected {
-                        if let Some(panel) = self.layout_panels.get_mut(i) {
+                    if let Some(i) = self.layout_selected
+                        && let Some(panel) = self.layout_panels.get_mut(i) {
                             ui.separator();
                             ui.label(
                                 egui::RichText::new("Axis label style (selected panel)")
@@ -4398,7 +4384,6 @@ impl FlowersApp {
                                 .color(p.muted),
                             );
                         }
-                    }
 
                     // Per-panel quick list (select / remove).
                     ui.separator();
@@ -4491,6 +4476,7 @@ fn gate_tree_ui(
         .filter(|i| gates[*i].parent.is_none())
         .collect();
 
+    #[allow(clippy::too_many_arguments)]
     fn rec(
         node: usize,
         depth: usize,
@@ -4618,8 +4604,8 @@ impl FlowersApp {
                         ui.label("Save your workspace before closing the window?");
                         ui.add_space(8.0);
                         ui.horizontal(|ui| {
-                            if ui.button("Save Workspace…").clicked() {
-                                if let Some(path) = rfd::FileDialog::new()
+                            if ui.button("Save Workspace…").clicked()
+                                && let Some(path) = rfd::FileDialog::new()
                                     .add_filter("Flowers workspace", &["wsp", "json"])
                                     .set_file_name("workspace.wsp")
                                     .save_file()
@@ -4633,7 +4619,6 @@ impl FlowersApp {
                                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                                     }
                                 }
-                            }
                             if ui.button("Quit Without Saving").clicked() {
                                 self.quit_confirm = false;
                                 self.allow_close = true;
@@ -4823,11 +4808,10 @@ impl FlowersApp {
                     ui.add_space(6.0);
 
                     // Import button.
-                    if primary_button(ui, p, "Import FCS").clicked() {
-                        if let Some(path) = rfd::FileDialog::new().pick_file() {
+                    if primary_button(ui, p, "Import FCS").clicked()
+                        && let Some(path) = rfd::FileDialog::new().pick_file() {
                             self.load_file(&path);
                         }
-                    }
                     ui.add_space(8.0);
 
                     // Sample list.
@@ -4843,9 +4827,9 @@ impl FlowersApp {
                             p.soft
                         };
                         let row_stroke = if selected {
-                            egui::Stroke::new(1.0, p.teal)
+                            egui::Stroke::new(1.0_f32, p.teal)
                         } else {
-                            egui::Stroke::new(1.0, p.border)
+                            egui::Stroke::new(1.0_f32, p.border)
                         };
                         egui::Frame::none()
                             .fill(row_fill)
@@ -5102,11 +5086,10 @@ impl FlowersApp {
                         if primary_button(ui, p, "+ Add Gate").clicked() {
                             self.add_default_gate();
                         }
-                        if secondary_button(ui, p, "Remove selected").clicked() {
-                            if let Some(i) = self.selected_gate {
+                        if secondary_button(ui, p, "Remove selected").clicked()
+                            && let Some(i) = self.selected_gate {
                                 self.remove_gate(i);
                             }
-                        }
                     });
                     ui.add_space(4.0);
                     ui.label(
@@ -5325,12 +5308,11 @@ impl FlowersApp {
                                         changed = true;
                                     }
                                 }
-                                if secondary_button(ui, p, "− Remove vertex").clicked() {
-                                    if vertices.len() > 3 {
+                                if secondary_button(ui, p, "− Remove vertex").clicked()
+                                    && vertices.len() > 3 {
                                         vertices.pop();
                                         changed = true;
                                     }
-                                }
                                 ui.label(
                                     egui::RichText::new("Minimum 3 vertices.")
                                         .small()
@@ -5652,15 +5634,14 @@ impl FlowersApp {
                             });
                     }
                     ui.add_space(6.0);
-                    if ui.button("Export CSV…").clicked() {
-                        if let Some(path) = rfd::FileDialog::new()
+                    if ui.button("Export CSV…").clicked()
+                        && let Some(path) = rfd::FileDialog::new()
                             .add_filter("CSV", &["csv"])
                             .set_file_name("populations.csv")
                             .save_file()
                         {
                             self.export_csv(&path);
                         }
-                    }
                 });
             });
 
@@ -5777,7 +5758,7 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
                             // Tool toggle group: select / rectangle / polygon.
                             egui::Frame::none()
                                 .fill(p.soft)
-                                .stroke(egui::Stroke::new(1.0, p.border))
+                                .stroke(egui::Stroke::new(1.0_f32, p.border))
                                 .rounding(6.0)
                                 .inner_margin(egui::Margin::same(2.0))
                                 .show(ui, |ui| {
@@ -6462,8 +6443,7 @@ mod tests {
         let ctx = egui::Context::default();
         let screen =
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
-        let mut raw = egui::RawInput::default();
-        raw.screen_rect = Some(screen);
+        let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
         // Run a few frames so the resizable bottom panel settles on its
         // content height before checking the central plot card.
         for _ in 0..3 {
@@ -6603,11 +6583,13 @@ mod tests {
     }
 
     fn close_request_input() -> egui::RawInput {
-        let mut raw = egui::RawInput::default();
-        raw.screen_rect = Some(egui::Rect::from_min_size(
-            egui::Pos2::ZERO,
-            egui::vec2(1400.0, 900.0),
-        ));
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 900.0),
+            )),
+            ..Default::default()
+        };
         raw.viewports
             .get_mut(&egui::ViewportId::ROOT)
             .unwrap()
@@ -6625,8 +6607,7 @@ mod tests {
     #[test]
     fn closing_with_unsaved_changes_prompts_and_cancels_the_close() {
         let ctx = egui::Context::default();
-        let mut app = FlowersApp::default();
-        app.dirty = true;
+        let mut app = FlowersApp { dirty: true, ..Default::default() };
 
         let output = ctx.run(close_request_input(), |ctx| app.draw(ctx));
 
@@ -6658,11 +6639,13 @@ mod tests {
     #[test]
     fn quit_without_saving_allows_a_later_close_request() {
         let ctx = egui::Context::default();
-        let mut app = FlowersApp::default();
-        app.dirty = true;
+        let mut app = FlowersApp {
+            dirty: true,
+            quit_confirm: false,
+            allow_close: true,
+            ..Default::default()
+        };
         // This is the state the "Quit Without Saving" button sets.
-        app.quit_confirm = false;
-        app.allow_close = true;
 
         let output = ctx.run(close_request_input(), |ctx| app.draw(ctx));
 
@@ -6684,8 +6667,7 @@ mod tests {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
 
         fn run(ctx: &egui::Context, screen: egui::Rect) -> (egui::Rect, Option<egui::Rect>) {
-            let mut raw = egui::RawInput::default();
-            raw.screen_rect = Some(screen);
+            let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
             let mut central_rect: Option<egui::Rect> = None;
             let mut bottom_rect: Option<egui::Rect> = None;
             let _ = ctx.run(raw, |ctx| {

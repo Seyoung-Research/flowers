@@ -89,7 +89,7 @@ pub fn rasterize_svg(
 
     let mut data = pixmap.take();
     // tiny-skia stores premultiplied RGBA; `image` expects straight alpha.
-    for px in data.chunks_exact_mut(4) {
+    for px in data.as_chunks_mut::<4>().0 {
         let a = px[3];
         if a != 0 && a != 255 {
             let inv = 255.0 / a as f32;

@@ -61,7 +61,7 @@ impl Population {
             children: p
                 .children
                 .iter()
-                .map(|c| Population::to_snapshot(c))
+                .map(Population::to_snapshot)
                 .collect(),
         }
     }
@@ -208,7 +208,7 @@ mod tests {
             text.extend_from_slice(format!("$P{n}N/P{n}/").as_bytes());
             text.extend_from_slice(format!("$P{n}R/4.0/").as_bytes());
         }
-        text.extend_from_slice(format!("$BYTEORD/1,2,3,4/").as_bytes());
+        text.extend_from_slice("$BYTEORD/1,2,3,4/".to_string().as_bytes());
 
         let text_start = FCS_HEADER_LEN; // 0-indexed, right after header
         let text_end = text_start + text.len();

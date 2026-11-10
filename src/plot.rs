@@ -14,16 +14,13 @@ use serde::Serialize;
 
 /// How a plot axis maps values to positions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Default)]
 pub enum AxisScale {
+    #[default]
     Linear,
     Log,
 }
 
-impl Default for AxisScale {
-    fn default() -> Self {
-        AxisScale::Linear
-    }
-}
 
 impl AxisScale {
     /// Forward transform: data value -> plot position (base-10 log for `Log`).
@@ -971,10 +968,12 @@ mod tests {
     #[test]
     fn log_axis_dot_plot_renders() {
         let data = array![[1.0, 10.0], [100.0, 1000.0]];
-        let mut style = PlotStyle::default();
-        style.x_scale = AxisScale::Log;
-        style.y_scale = AxisScale::Log;
-        style.gradient = true;
+        let style = PlotStyle {
+            x_scale: AxisScale::Log,
+            y_scale: AxisScale::Log,
+            gradient: true,
+            ..Default::default()
+        };
         let svg = dot_plot_svg(&data, 0, 1, "A", "B", &[], None, None, &[], &style);
         assert!(svg.contains("Log"));
     }

@@ -473,10 +473,15 @@ impl BooleanGate {
         }
     }
 
-    pub fn not(child: BooleanGate) -> Self {
+}
+
+impl std::ops::Not for BooleanGate {
+    type Output = BooleanGate;
+
+    fn not(self) -> Self {
         Self::Unary {
             op: BooleanOp::Not,
-            child: Box::new(child),
+            child: Box::new(self),
         }
     }
 }
