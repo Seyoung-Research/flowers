@@ -2,9 +2,13 @@ use clap::{Parser, Subcommand};
 use flowers::{
     compensation::CompensationEngine,
     fcs::FcsParser,
-    gating::{BilinearGate, EllipseGate, Gate, Quadrant, QuadrantGate, RectangularGate},
-    plot::{dot_plot_svg, histogram_svg, PlotStyle},
-    statistics::{compute_profile, print_profile},
+    gating::{
+        BilinearGate, EllipseGate, FileMaskGate, Gate, MaskFileFormat, Quadrant, QuadrantGate,
+        RangeGate, RectangularGate, TimeGate, TimeGateMode,
+    },
+    gatingml::{GatingMlDocument, GatingMlGate, GatingMlVersion, shape_to_gatingml},
+    plot::{PlotStyle, dot_plot_svg, histogram_svg},
+    statistics::{compute_profile_with_denominators, print_profile},
 };
 use std::fs;
 use std::path::PathBuf;
@@ -32,7 +36,7 @@ enum Commands {
         fcs: PathBuf,
         /// Name for the resulting population.
         population: String,
-        /// Gate type: rect, ellipse, quadrant, bilinear.
+        /// Gate type: rect, ellipse, quadrant, bilinear, range, time.
         #[arg(value_enum)]
         gate: GateType,
         /// X parameter index.
@@ -47,6 +51,18 @@ enum Commands {
         min_y: f32,
         /// Y upper bound.
         max_y: f32,
+    },
+    /// Apply a mask gate imported from a mask file.
+    Mask {
+        /// Path to the FCS file.
+        fcs: PathBuf,
+        /// Name for the resulting population.
+        population: String,
+        /// Path to the mask file.
+        mask: PathBuf,
+        /// Mask file layout.
+        #[arg(long, value_enum, default_value_t = MaskFormatArg::Indices)]
+        format: MaskFormatArg,
     },
     /// Gate a population and print its statistics (mean, median, SD, CV, geo-MFI...).
     Stats {
@@ -66,6 +82,9 @@ enum Commands {
         min_y: f32,
         /// Y upper bound.
         max_y: f32,
+        /// Additional "Freq of" denominator, as `LABEL=COUNT` (repeatable).
+        #[arg(long = "freq-of", value_name = "LABEL=COUNT")]
+        freq_of: Vec<String>,
     },
     /// Render a 2D dot plot (SVG) of two parameters.
     Plot {
@@ -94,6 +113,61 @@ enum Commands {
         /// Path to a CSV spillover matrix (rows = original channels).
         matrix: PathBuf,
     },
+    /// Inspect, convert or export Gating-ML 1.5/2.0 documents.
+    GatingMl {
+        #[command(subcommand)]
+        action: GatingMlAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum GatingMlAction {
+    /// Parse a Gating-ML file and print its gates and warnings.
+    Inspect {
+        /// Path to the Gating-ML XML file.
+        file: PathBuf,
+    },
+    /// Re-serialize a Gating-ML file, optionally changing the schema version.
+    Convert {
+        /// Input Gating-ML XML file.
+        input: PathBuf,
+        /// Output Gating-ML XML file.
+        output: PathBuf,
+        /// Target Gating-ML version (defaults to the input version).
+        #[arg(long, value_enum)]
+        version: Option<GatingMlVersionArg>,
+    },
+    /// Export the gates in a Flowers JSON project to Gating-ML.
+    Export {
+        /// Input Flowers project (`.json`).
+        project: PathBuf,
+        /// Output Gating-ML XML file.
+        output: PathBuf,
+        /// Optional FCS file used to resolve parameter names.
+        #[arg(long)]
+        fcs: Option<PathBuf>,
+        /// Gating-ML version to emit.
+        #[arg(long, value_enum, default_value_t = GatingMlVersionArg::V2)]
+        version: GatingMlVersionArg,
+    },
+}
+
+/// Gating-ML schema versions accepted by the CLI.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum GatingMlVersionArg {
+    #[value(name = "1.5")]
+    V1_5,
+    #[value(name = "2.0")]
+    V2,
+}
+
+impl From<GatingMlVersionArg> for GatingMlVersion {
+    fn from(value: GatingMlVersionArg) -> Self {
+        match value {
+            GatingMlVersionArg::V1_5 => GatingMlVersion::V1_5,
+            GatingMlVersionArg::V2 => GatingMlVersion::V2_0,
+        }
+    }
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -102,6 +176,26 @@ enum GateType {
     Ellipse,
     Quadrant,
     Bilinear,
+    Range,
+    Time,
+}
+
+/// Mask file formats accepted by the `mask` subcommand.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum MaskFormatArg {
+    /// Decimal event indices separated by whitespace, commas or semicolons.
+    Indices,
+    /// Packed bitset, one bit per event, least-significant bit first.
+    Bits,
+}
+
+impl From<MaskFormatArg> for MaskFileFormat {
+    fn from(value: MaskFormatArg) -> Self {
+        match value {
+            MaskFormatArg::Indices => MaskFileFormat::Indices,
+            MaskFormatArg::Bits => MaskFileFormat::Bits,
+        }
+    }
 }
 
 fn main() {
@@ -173,6 +267,10 @@ fn run(command: Commands) -> Result<(), anyhow::Error> {
                         true,
                     ))
                 }
+                GateType::Range => Box::new(RangeGate::new(x, min_x, max_x)),
+                GateType::Time => {
+                    Box::new(TimeGate::new(x, min_x, max_x).with_mode(TimeGateMode::Value))
+                }
             };
             let indices = gate.filter(&fcs_file.data);
             println!(
@@ -185,6 +283,34 @@ fn run(command: Commands) -> Result<(), anyhow::Error> {
             );
         }
 
+        Commands::Mask {
+            fcs,
+            population,
+            mask,
+            format,
+        } => {
+            let fcs_file = load_fcs(&fcs)?;
+            let gate = FileMaskGate::load(&mask, format.into())?;
+            let indices = gate.filter(&fcs_file.data);
+            println!(
+                "Mask '{}' from {} on {}: {} / {} events pass ({:.1}%)",
+                population,
+                mask.display(),
+                fcs.display(),
+                indices.len(),
+                fcs_file.event_count,
+                (indices.len() as f64 / fcs_file.event_count as f64) * 100.0,
+            );
+            let ignored = gate.mask.out_of_range(fcs_file.event_count);
+            if !ignored.is_empty() {
+                println!(
+                    "  warning: {} mask indices are out of range (>= {})",
+                    ignored.len(),
+                    fcs_file.event_count
+                );
+            }
+        }
+
         Commands::Stats {
             fcs,
             population,
@@ -194,22 +320,32 @@ fn run(command: Commands) -> Result<(), anyhow::Error> {
             max_x,
             min_y,
             max_y,
+            freq_of,
         } => {
             let fcs_file = load_fcs(&fcs)?;
             let gate = RectangularGate::new(x, y, min_x, max_x, min_y, max_y);
             let indices = gate.filter(&fcs_file.data);
-            let param_names: Vec<String> = fcs_file
-                .parameters
-                .iter()
-                .map(|p| p.name.clone())
-                .collect();
-            let profile = compute_profile(
+            let param_names: Vec<String> =
+                fcs_file.parameters.iter().map(|p| p.name.clone()).collect();
+            let mut frequencies = Vec::new();
+            for spec in &freq_of {
+                let (label, count) = spec.split_once('=').ok_or_else(|| {
+                    anyhow::anyhow!("--freq-of expects LABEL=COUNT, got '{spec}'")
+                })?;
+                let count: usize = count
+                    .trim()
+                    .parse()
+                    .map_err(|e| anyhow::anyhow!("invalid count in --freq-of '{spec}': {e}"))?;
+                frequencies.push((label.trim().to_string(), Some(count)));
+            }
+            let profile = compute_profile_with_denominators(
                 &population,
                 &fcs_file.data,
                 &indices,
                 &param_names,
                 None,
                 Some(fcs_file.event_count),
+                &frequencies,
             );
             print_profile(&profile);
         }
@@ -249,11 +385,16 @@ fn run(command: Commands) -> Result<(), anyhow::Error> {
                 "Count",
                 &[],
                 None,
-                30,
+                400,
                 &PlotStyle::default(),
             );
             fs::write(&out, &svg)?;
-            println!("Wrote histogram {} ({} events) -> {}", out.display(), fcs_file.event_count, name);
+            println!(
+                "Wrote histogram {} ({} events) -> {}",
+                out.display(),
+                fcs_file.event_count,
+                name
+            );
         }
 
         Commands::Compensate { fcs, matrix } => {
@@ -272,8 +413,137 @@ fn run(command: Commands) -> Result<(), anyhow::Error> {
             let mean: f32 = col.iter().sum::<f32>() / col.len() as f32;
             println!("  corrected mean channel 0: {mean:.4}");
         }
+
+        Commands::GatingMl { action } => match action {
+            GatingMlAction::Inspect { file } => {
+                let doc = GatingMlDocument::load(&file)?;
+                println!(
+                    "Gating-ML {}: {} gate(s) from {}",
+                    doc.version.label(),
+                    doc.gates.len(),
+                    file.display()
+                );
+                for gate in &doc.gates {
+                    println!(
+                        "  {} '{}' ({}){}",
+                        gate.id,
+                        gate.name,
+                        gate_kind_label(&gate.kind),
+                        gate.parent_id
+                            .as_deref()
+                            .map(|p| format!(" parent={p}"))
+                            .unwrap_or_default()
+                    );
+                }
+                if let Some(matrix) = &doc.compensation {
+                    println!("  compensation: {} channels", matrix.channels.len());
+                }
+                for warning in &doc.warnings {
+                    println!("  warning: {warning}");
+                }
+            }
+            GatingMlAction::Convert {
+                input,
+                output,
+                version,
+            } => {
+                let doc = GatingMlDocument::load(&input)?;
+                let mut out = GatingMlDocument::new(version.map(Into::into).unwrap_or(doc.version));
+                out.gates = doc.gates;
+                out.compensation = doc.compensation;
+                out.save(&output)?;
+                println!(
+                    "Converted {} Gating-ML {} gate(s) -> {} ({})",
+                    out.gates.len(),
+                    out.version.label(),
+                    output.display(),
+                    out.version.label()
+                );
+            }
+            GatingMlAction::Export {
+                project,
+                output,
+                fcs,
+                version,
+            } => {
+                let text = fs::read_to_string(&project)?;
+                let project = flowers::project::from_json(&text)?;
+                let names = match &fcs {
+                    Some(path) => {
+                        let fcs_file = load_fcs(path)?;
+                        fcs_file
+                            .parameters
+                            .iter()
+                            .map(|p| p.name.clone())
+                            .collect::<Vec<_>>()
+                    }
+                    None => Vec::new(),
+                };
+                let param =
+                    |idx: usize| names.get(idx).cloned().unwrap_or_else(|| format!("P{idx}"));
+                let mut doc = GatingMlDocument::new(version.into());
+                let mut skipped = 0usize;
+                for (i, gate) in project.gates.iter().enumerate() {
+                    let id = format!("gate-{}", i + 1);
+                    let parent_id = gate
+                        .parent
+                        .filter(|&p| p < project.gates.len())
+                        .map(|p| format!("gate-{}", p + 1));
+                    match shape_to_gatingml(&gate.kind, param(gate.x_idx), param(gate.y_idx)) {
+                        Some(kind) => doc.gates.push(GatingMlGate {
+                            id,
+                            parent_id,
+                            name: gate.name.clone(),
+                            kind,
+                        }),
+                        None => {
+                            skipped += 1;
+                            doc.warnings.push(format!(
+                                "gate '{}' has no Gating-ML representation and was skipped",
+                                gate.name
+                            ));
+                        }
+                    }
+                }
+                // Carry the first available compensation matrix so the
+                // strategy round-trips through the flowers extension.
+                if let Some(matrix) = project
+                    .samples
+                    .iter()
+                    .find_map(|sample| sample.compensation.as_ref())
+                {
+                    doc.compensation = Some(matrix.clone());
+                }
+                doc.save(&output)?;
+                println!(
+                    "Exported {} gate(s) to {} (Gating-ML {}){}",
+                    doc.gates.len(),
+                    output.display(),
+                    doc.version.label(),
+                    if skipped > 0 {
+                        format!(", skipped {skipped}")
+                    } else {
+                        String::new()
+                    }
+                );
+                for warning in &doc.warnings {
+                    println!("  warning: {warning}");
+                }
+            }
+        },
     }
     Ok(())
+}
+
+fn gate_kind_label(kind: &flowers::gatingml::GatingMlGateKind) -> &'static str {
+    use flowers::gatingml::GatingMlGateKind::*;
+    match kind {
+        Rectangle { .. } => "rectangle",
+        Polygon { .. } => "polygon",
+        Ellipse { .. } => "ellipse",
+        Quadrant { .. } => "quadrant",
+        Boolean { .. } => "boolean",
+    }
 }
 
 fn load_fcs(path: &PathBuf) -> Result<flowers::fcs::FcsFile, anyhow::Error> {
@@ -318,12 +588,24 @@ fn parse_csv_matrix(text: &str) -> Result<ndarray::Array2<f32>, anyhow::Error> {
 }
 
 /// Build an ndarray::Array2 from a flat row-major slice.
-fn array2_from_flat(flat: &[f32], nrows: usize, ncols: usize) -> Result<ndarray::Array2<f32>, anyhow::Error> {
+fn array2_from_flat(
+    flat: &[f32],
+    nrows: usize,
+    ncols: usize,
+) -> Result<ndarray::Array2<f32>, anyhow::Error> {
     if flat.len() != nrows * ncols {
-        anyhow::bail!("matrix size mismatch: {} values for {}x{}", flat.len(), nrows, ncols);
+        anyhow::bail!(
+            "matrix size mismatch: {} values for {}x{}",
+            flat.len(),
+            nrows,
+            ncols
+        );
     }
     // ndarray 0.15: construct from shape + iterator.
-    Ok(ndarray::Array2::from_shape_vec((nrows, ncols), flat.to_vec())?)
+    Ok(ndarray::Array2::from_shape_vec(
+        (nrows, ncols),
+        flat.to_vec(),
+    )?)
 }
 
 #[cfg(test)]

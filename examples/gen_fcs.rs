@@ -1,7 +1,6 @@
 //! Generates a realistic-looking FCS 3.0 file with 4 parameters and 4000 events
 //! containing two Gaussian clusters, for end-to-end CLI testing of `flowers`.
 
-
 fn ptr(n: usize) -> [u8; 8] {
     let s = format!("{n:>8}");
     let mut b = [0u8; 8];

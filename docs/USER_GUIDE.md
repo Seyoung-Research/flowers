@@ -12,25 +12,26 @@ written in Rust. This guide explains how to use the graphical user interface
    - [Axes, Scales & Ranges](#axes-scales--ranges)
    - [Dot Colour, Gradient & View](#dot-colour-gradient--view)
    - [Histogram / Counts View](#histogram--counts-view)
-4. [Gating](#gating)
+4. [Compensation](#compensation)
+5. [Gating](#gating)
    - [Creating Gates](#creating-gates)
    - [Gate Types](#gate-types)
    - [Manipulating Gates](#manipulating-gates)
    - [Polygon Vertices](#polygon-vertices)
    - [Bilinear / Line Gate (Region Under a Line)](#bilinear--line-gate-region-under-a-line)
-5. [Gate Hierarchy & Tree](#gate-hierarchy--tree)
-6. [Detached Population Windows](#detached-population-windows)
-7. [Themes](#themes)
-8. [Undo / Redo](#undo--redo)
-9. [Applying Gates Across Files](#applying-gates-across-files)
-10. [Export](#export)
+6. [Gate Hierarchy & Tree](#gate-hierarchy--tree)
+7. [Detached Population Windows](#detached-population-windows)
+8. [Themes](#themes)
+9. [Undo / Redo](#undo--redo)
+10. [Applying Gates Across Files](#applying-gates-across-files)
+11. [Export](#export)
     - [SVG Export](#svg-export)
     - [Raster Image Export (PNG/JPEG/TIFF)](#raster-image-export-pngjpegtiff)
     - [CSV Export](#csv-export)
-11. [Layout Editor](#layout-editor)
+12. [Layout Editor](#layout-editor)
     - [Axis Label Styling](#axis-label-styling)
-12. [Workspaces](#workspaces)
-13. [Command-Line Interface](#command-line-interface)
+13. [Workspaces](#workspaces)
+14. [Command-Line Interface](#command-line-interface)
 
 ---
 
@@ -76,6 +77,35 @@ the current gating strategy to that file — see
 
 ---
 
+## Compensation
+
+Open **Compensation** from the top menu bar (or click **Compensation…** in the left
+sidebar) to correct spectral spillover between channels. The window shows the
+current sample and its compensation status.
+
+1. Build a matrix in one of these ways:
+   - **Load matrix CSV…** — load a CSV, TSV, or semicolon-separated matrix. Both
+     the headerless and `,channel` header layouts are accepted.
+   - **Use $SPILLOVER** — load the acquisition spillover matrix stored in the
+     FCS file. An inverted compensation matrix is applied automatically when a
+     file with `$SPILLOVER` is loaded.
+   - **New identity** — start from an identity matrix and edit individual
+     coefficients.
+2. If the matrix uses different channel names, click **Add all sample channels**
+   to include the sample's channels. Matching is by parameter name first, then
+   by description, so matrices from other acquisitions usually line up.
+3. Edit any coefficient directly in the grid. **Invert** converts a raw
+   spillover matrix into the compensation matrix that is applied.
+4. Click **Apply to current** or **Apply to all samples**. The matrix is applied
+   as `data × matrix`; channels missing from the matrix stay unchanged.
+5. Click **Remove current** or **Remove all** to restore the original,
+   uncompensated data. Compensation matrices are saved with workspaces and
+   reapplied when the workspace is opened.
+
+The main header shows whether the current sample is compensated.
+
+---
+
 ## The Plotting Window
 
 ### Axes, Scales & Ranges
@@ -91,6 +121,8 @@ Open **Axis options** in the left sidebar:
     pixel.
   - **Click** a value to type an exact number. Both plain (`250000`) and
     scientific (`2.5e5`, `1e7`) input are accepted.
+- **− / +**: Zoom the axis out / in about its centre, similar to FlowJo. On a
+  log axis the zoom steps are even in decades.
 - **Auto**: Click **Auto** next to an axis to fit it to the data.
 
 Axis tick labels use compact scientific notation for large values (e.g. `7e4`
@@ -114,7 +146,8 @@ the currently selected X-axis channel:
 
 - X-axis: the selected parameter.
 - Y-axis: event count per bin.
-- 50 bins span the X-axis range.
+- Bins are sized to roughly one plot pixel, so peaks are smooth rather than
+  blocky; exported SVG histograms use 400 bins.
 
 This view is available in both the main window and detached population windows.
 

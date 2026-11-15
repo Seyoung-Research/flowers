@@ -1,10 +1,13 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::cell::RefCell;
 
 use crate::fcs::FcsFile;
 use crate::gating::GatedPopulation;
-use crate::statistics::{compute_profile, PopulationProfile};
+use crate::groups::SampleGroups;
+use crate::statistics::PopulationProfile;
+
+use serde::{Deserialize, Serialize};
 
 /// A node in the hierarchical population tree.
 ///
@@ -58,11 +61,7 @@ impl Population {
             name: p.name.clone(),
             count: p.event_indices.len(),
             gate_summary: p.gate_summary.clone(),
-            children: p
-                .children
-                .iter()
-                .map(Population::to_snapshot)
-                .collect(),
+            children: p.children.iter().map(Population::to_snapshot).collect(),
         }
     }
 }
@@ -80,6 +79,71 @@ pub struct Workspace {
     pub sample_order: Vec<String>,
     /// Computed profiles keyed by (sample_id, population_path).
     pub profiles: HashMap<String, PopulationProfile>,
+    /// Configurable column sets for the workspace views (W10).
+    pub columns: WorkspaceColumns,
+    /// Keyword-based sample groups (W1).
+    pub groups: SampleGroups,
+}
+
+/// Configurable column sets for workspace views (W10).
+///
+/// Columns are identified by stable string ids (for example `id`, `$TOT`,
+/// `count`). Users can add / remove columns per row kind (sample, population or
+/// statistic); the effective sets are consulted by the workspace UI and reports.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WorkspaceColumns {
+    /// Columns visible for sample rows.
+    pub sample_columns: Vec<String>,
+    /// Columns visible for population rows.
+    pub population_columns: Vec<String>,
+    /// Columns visible for statistic rows.
+    pub statistic_columns: Vec<String>,
+}
+
+impl WorkspaceColumns {
+    /// A fresh set of empty column lists.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Is `column` enabled for the given row kind?
+    pub fn is_enabled(&self, kind: &str, column: &str) -> bool {
+        let columns = match kind {
+            "sample" => &self.sample_columns,
+            "population" => &self.population_columns,
+            "statistic" => &self.statistic_columns,
+            _ => return false,
+        };
+        columns.iter().any(|c| c == column)
+    }
+
+    /// Return a copy of these column sets with `column` added to `kind`.
+    pub fn with_column(&self, kind: &str, column: &str) -> Self {
+        let mut next = self.clone();
+        let columns = match kind {
+            "sample" => &mut next.sample_columns,
+            "population" => &mut next.population_columns,
+            "statistic" => &mut next.statistic_columns,
+            _ => return next,
+        };
+        if !columns.iter().any(|c| c == column) {
+            columns.push(column.to_string());
+        }
+        next
+    }
+
+    /// Return a copy of these column sets with `column` removed from `kind`.
+    pub fn without_column(&self, kind: &str, column: &str) -> Self {
+        let mut next = self.clone();
+        let columns = match kind {
+            "sample" => &mut next.sample_columns,
+            "population" => &mut next.population_columns,
+            "statistic" => &mut next.statistic_columns,
+            _ => return next,
+        };
+        columns.retain(|c| c != column);
+        next
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +173,8 @@ impl Workspace {
             samples: HashMap::new(),
             sample_order: Vec::new(),
             profiles: HashMap::new(),
+            columns: WorkspaceColumns::new(),
+            groups: SampleGroups::new(),
         }
     }
 
@@ -116,6 +182,7 @@ impl Workspace {
         let sample = Sample::new(id, fcs_file);
         self.samples.insert(id.to_string(), sample);
         self.sample_order.push(id.to_string());
+        self.refresh_groups();
     }
 
     pub fn get_sample(&self, id: &str) -> Option<&Sample> {
@@ -146,21 +213,34 @@ impl Workspace {
         population_path: &str,
         indices: &[usize],
     ) -> PopulationProfile {
+        self.compute_profile_for_with(sample_id, population_path, indices, &[])
+    }
+
+    /// Compute and cache a profile with arbitrary "Freq of" denominators.
+    ///
+    /// `frequencies` lists reference populations (ancestors, grandparent, the
+    /// grand total, or any other named denominator) as
+    /// `(label, Some(event_count))`. Each entry becomes a
+    /// [`crate::statistics::Statistic::FreqOf`] statistic in the profile.
+    pub fn compute_profile_for_with(
+        &mut self,
+        sample_id: &str,
+        population_path: &str,
+        indices: &[usize],
+        frequencies: &[(String, Option<usize>)],
+    ) -> PopulationProfile {
         let sample = self.samples.get(sample_id).expect("sample must exist");
         let fcs = &sample.fcs_file;
-        let param_names: Vec<String> = fcs
-            .parameters
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
+        let param_names: Vec<String> = fcs.parameters.iter().map(|p| p.name.clone()).collect();
         let total_count = Some(fcs.event_count);
-        let profile = compute_profile(
+        let profile = crate::statistics::compute_profile_with_denominators(
             population_path,
             &fcs.data,
             indices,
             &param_names,
             None,
             total_count,
+            frequencies,
         );
         let key = format!("{sample_id}::{population_path}");
         self.profiles.insert(key.clone(), profile.clone());
@@ -195,6 +275,70 @@ mod tests {
         let profile = ws.compute_profile_for("s1", "Live", &indices);
         assert_eq!(profile.count, 2);
         assert!(ws.profiles().count() >= 1);
+    }
+
+    #[test]
+    fn compute_profile_with_freq_of_ancestor() {
+        let mut ws = Workspace::new();
+        let fcs = crate::fcs::FcsParser::parse_bytes(&build_fcs(6, 2)).unwrap();
+        ws.add_sample("s1", fcs);
+
+        let indices = vec![0, 2, 4];
+        ws.add_root_population("s1", "Parent", (0..6).collect());
+        ws.add_root_population("s1", "Child", indices.clone());
+        // Six events total, so the child is 50% of the grand total.
+        let frequencies = vec![("Grandparent".to_string(), Some(6usize))];
+        let profile = ws.compute_profile_for_with("s1", "Child", &indices, &frequencies);
+        assert_eq!(profile.count, 3);
+        let freq = profile
+            .stats
+            .iter()
+            .find(|s| {
+                s.statistic
+                    == crate::statistics::Statistic::FreqOf {
+                        denominator: "Grandparent".to_string(),
+                    }
+            })
+            .expect("grandparent frequency should be computed");
+        assert!((freq.value - 50.0).abs() < 1e-6);
+        // The cached profile is available through the normal accessor.
+        let cached = ws
+            .profiles()
+            .find(|(key, _)| key.as_str() == "s1::Child")
+            .map(|(_, p)| p)
+            .unwrap();
+        assert_eq!(cached.count, 3);
+    }
+
+    #[test]
+    fn workspace_columns_default_to_empty_sets() {
+        let columns = WorkspaceColumns::new();
+        assert!(columns.sample_columns.is_empty());
+        assert!(columns.population_columns.is_empty());
+        assert!(columns.statistic_columns.is_empty());
+        assert!(!columns.is_enabled("sample", "id"));
+        assert!(!columns.is_enabled("population", "count"));
+        assert!(!columns.is_enabled("statistic", "mean"));
+        assert!(!columns.is_enabled("unknown", "id"));
+    }
+
+    #[test]
+    fn workspace_columns_add_and_remove_columns() {
+        let columns = WorkspaceColumns::new();
+        let with = columns.with_column("sample", "id");
+        assert!(with.is_enabled("sample", "id"));
+        assert!(!with.is_enabled("population", "id"));
+
+        let with_tot = with.with_column("sample", "$TOT");
+        assert!(with_tot.is_enabled("sample", "$TOT"));
+        // Adding an existing column is idempotent.
+        assert_eq!(with_tot.with_column("sample", "id"), with_tot);
+
+        let without = with_tot.without_column("sample", "$TOT");
+        assert!(!without.is_enabled("sample", "$TOT"));
+        assert!(without.is_enabled("sample", "id"));
+        let without_id = without.without_column("sample", "id");
+        assert!(!without_id.is_enabled("sample", "id"));
     }
 
     fn build_fcs(events: usize, params: usize) -> Vec<u8> {

@@ -10,6 +10,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::compensation::CompensationMatrix;
+use crate::derived::DerivedParameter;
+use crate::statistics::StatisticSet;
+use crate::transform::AxisScale;
+
 /// Current on-disk project format version.
 pub const PROJECT_VERSION: u32 = 1;
 
@@ -36,6 +41,12 @@ pub struct Project {
     pub layout: Vec<ProjectPanel>,
     #[serde(default = "default_layout_columns")]
     pub layout_columns: usize,
+    /// Named statistic sets configured for this analysis.
+    #[serde(default)]
+    pub statistic_sets: Vec<StatisticSet>,
+    /// Formula-based derived parameters (T6).
+    #[serde(default)]
+    pub derived: Vec<DerivedParameter>,
 }
 
 fn default_layout_columns() -> usize {
@@ -55,6 +66,8 @@ impl Default for Project {
             gates: Vec::new(),
             layout: Vec::new(),
             layout_columns: default_layout_columns(),
+            statistic_sets: Vec::new(),
+            derived: Vec::new(),
         }
     }
 }
@@ -67,6 +80,13 @@ pub struct ProjectSample {
     /// Whether the shared gate set applies to this file.
     #[serde(default = "default_true")]
     pub apply_gates: bool,
+    /// Compensation matrix applied to this sample, if any.
+    #[serde(default)]
+    pub compensation: Option<CompensationMatrix>,
+    /// Per-parameter axis transforms configured for this sample; an empty list
+    /// means the view-level (global) scale applies.
+    #[serde(default)]
+    pub transforms: Vec<(usize, AxisScale)>,
 }
 
 fn default_true() -> bool {
@@ -78,16 +98,111 @@ fn default_true() -> bool {
 pub struct ViewSettings {
     /// One of `dots`, `contour`, `histogram`.
     pub mode: String,
-    /// `linear` or `log`.
+    /// Axis transform key: `linear`, `log`, `arcsinh:150`, `biex:...`, etc.
     pub x_scale: String,
+    /// Axis transform key: `linear`, `log`, `arcsinh:150`, `biex:...`, etc.
     pub y_scale: String,
     /// RGB point colour.
     pub point_color: [u8; 3],
     /// Density gradient layering.
     pub gradient: bool,
+    /// Draw other populations of the current X/Y pair as coloured overlays.
+    #[serde(default)]
+    pub overlay_populations: bool,
+    /// Density colour map for pseudocolour / zebra views (`rainbow`, `jet`,
+    /// `viridis`, `greyscale`, `zebra`).
+    #[serde(default = "default_density_map")]
+    pub density_map: String,
     pub contour_levels: usize,
     pub x_range: (f64, f64),
     pub y_range: (f64, f64),
+    /// Gate outline thickness in points.
+    #[serde(default = "default_gate_line_width")]
+    pub gate_line_width: f32,
+    /// Draw a median-cross overlay for each visible gate population.
+    #[serde(default)]
+    pub show_median_cross: bool,
+    /// Pull gate drawing toward dense regions (magnetic snapping).
+    #[serde(default)]
+    pub magnetic_snap: bool,
+    /// Attraction strength in `[0, 1]`.
+    #[serde(default = "default_magnetic_strength")]
+    pub magnetic_strength: f32,
+    /// Attraction radius as a fraction of the visible axis span.
+    #[serde(default = "default_magnetic_radius_frac")]
+    pub magnetic_radius_frac: f32,
+    /// Population/gate overlay label options.
+    #[serde(default)]
+    pub gate_labels: crate::plot::GateLabelSettings,
+    /// Automatic axis-range rules evaluated before data-driven auto-fit.
+    #[serde(default)]
+    pub autorange_rules: Vec<crate::transform::AutorangeRule>,
+    /// Swap the X and Y axes in the main plot (V5).
+    #[serde(default)]
+    pub transpose: bool,
+    /// Density smoothing fraction in `[0, 1]` (V5).
+    #[serde(default)]
+    pub plot_smoothing: f32,
+    /// Density grid resolution in cells per axis (V5).
+    #[serde(default = "default_plot_resolution")]
+    pub plot_resolution: usize,
+    /// Top percentage of events saturated on the density colour scale (V5).
+    #[serde(default)]
+    pub outlier_clip_percent: f64,
+    /// Double the event marker radius (V5).
+    #[serde(default)]
+    pub large_dots: bool,
+    /// Draw a background grid (V5).
+    #[serde(default)]
+    pub show_grid: bool,
+    /// Draw median lines across the plot (V5).
+    #[serde(default)]
+    pub show_medians: bool,
+    /// Show the plotted event count (V5).
+    #[serde(default)]
+    pub show_event_numbers: bool,
+    /// Append frequencies to overlay names (V5).
+    #[serde(default)]
+    pub show_names_frequencies: bool,
+    /// Tick notation key (`auto`, `scientific`, `decimal`).
+    #[serde(default = "default_tick_notation")]
+    pub tick_notation: String,
+    /// Show X/Y axis labels (V5).
+    #[serde(default = "default_true")]
+    pub show_axis_labels: bool,
+    /// Draw tick marks (V5).
+    #[serde(default = "default_true")]
+    pub show_ticks: bool,
+    /// Draw tick numbers (V5).
+    #[serde(default = "default_true")]
+    pub show_numbers: bool,
+    /// Draw adjunct X/Y histograms along the plot axes (V6).
+    #[serde(default)]
+    pub show_axis_histograms: bool,
+}
+
+fn default_gate_line_width() -> f32 {
+    1.5
+}
+
+fn default_density_map() -> String {
+    "rainbow".to_string()
+}
+
+fn default_plot_resolution() -> usize {
+    128
+}
+
+fn default_tick_notation() -> String {
+    "auto".to_string()
+}
+
+fn default_magnetic_strength() -> f32 {
+    0.6
+}
+
+fn default_magnetic_radius_frac() -> f32 {
+    0.04
 }
 
 impl Default for ViewSettings {
@@ -98,9 +213,32 @@ impl Default for ViewSettings {
             y_scale: "linear".to_string(),
             point_color: [31, 119, 180],
             gradient: true,
+            overlay_populations: false,
+            density_map: default_density_map(),
             contour_levels: 8,
             x_range: (0.0, 1.0),
             y_range: (0.0, 1.0),
+            gate_line_width: default_gate_line_width(),
+            show_median_cross: false,
+            magnetic_snap: false,
+            magnetic_strength: default_magnetic_strength(),
+            magnetic_radius_frac: default_magnetic_radius_frac(),
+            gate_labels: crate::plot::GateLabelSettings::default(),
+            autorange_rules: Vec::new(),
+            transpose: false,
+            plot_smoothing: 0.0,
+            plot_resolution: default_plot_resolution(),
+            outlier_clip_percent: 0.0,
+            large_dots: false,
+            show_grid: false,
+            show_medians: false,
+            show_event_numbers: false,
+            show_names_frequencies: false,
+            tick_notation: default_tick_notation(),
+            show_axis_labels: true,
+            show_ticks: true,
+            show_numbers: true,
+            show_axis_histograms: false,
         }
     }
 }
@@ -119,7 +257,7 @@ pub struct ProjectGate {
 }
 
 /// Serializable gate geometry, mirroring the GUI's gate kinds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum GateShape {
     Rect {
@@ -220,6 +358,8 @@ mod tests {
             samples: vec![ProjectSample {
                 path: "/tmp/a.fcs".to_string(),
                 apply_gates: false,
+                compensation: None,
+                transforms: Vec::new(),
             }],
             gates: vec![
                 ProjectGate {
@@ -302,7 +442,101 @@ mod tests {
         let back = from_json(r#"{"version":1}"#).unwrap();
         assert!(back.samples.is_empty());
         assert_eq!(back.view.mode, "dots");
+        assert_eq!(back.view.x_scale, "linear");
+        assert_eq!(back.view.y_scale, "linear");
         assert_eq!(back.view.point_color, [31, 119, 180]);
         assert_eq!(back.layout_columns, 2);
+        assert!(back.statistic_sets.is_empty());
+        assert_eq!(back.view.gate_line_width, 1.5);
+        assert!(!back.view.show_median_cross);
+        assert!(!back.view.magnetic_snap);
+        assert_eq!(back.view.magnetic_strength, 0.6);
+        assert_eq!(back.view.magnetic_radius_frac, 0.04);
+        assert!(back.view.gate_labels.show);
+        assert!(back.view.gate_labels.name);
+        assert!(!back.view.gate_labels.ancestry);
+        assert!(!back.view.gate_labels.backgating);
+    }
+
+    #[test]
+    fn gate_style_view_settings_round_trip() {
+        let mut project = Project::default();
+        project.view.gate_line_width = 3.5;
+        project.view.show_median_cross = true;
+        project.view.magnetic_snap = true;
+        project.view.magnetic_strength = 0.85;
+        project.view.magnetic_radius_frac = 0.08;
+        project.view.gate_labels.ancestry = true;
+        project.view.gate_labels.backgating = true;
+        let json = to_json(&project).unwrap();
+        let back = from_json(&json).unwrap();
+        assert_eq!(back.view.gate_line_width, 3.5);
+        assert!(back.view.show_median_cross);
+        assert!(back.view.magnetic_snap);
+        assert_eq!(back.view.magnetic_strength, 0.85);
+        assert_eq!(back.view.magnetic_radius_frac, 0.08);
+        assert!(back.view.gate_labels.ancestry);
+        assert!(back.view.gate_labels.backgating);
+    }
+
+    #[test]
+    fn statistic_sets_round_trip() {
+        let project = Project {
+            statistic_sets: vec![
+                crate::statistics::StatisticSet::robust(),
+                crate::statistics::StatisticSet::new(
+                    "Custom",
+                    vec![crate::statistics::StatSpec {
+                        parameter: Some("CD4".to_string()),
+                        statistic: crate::statistics::Statistic::Median,
+                        expected: None,
+                        heat: None,
+                    }],
+                ),
+            ],
+            ..Default::default()
+        };
+        let json = to_json(&project).unwrap();
+        let back = from_json(&json).unwrap();
+        assert_eq!(back.statistic_sets, project.statistic_sets);
+        assert_eq!(back.statistic_sets[0].name, "Robust");
+    }
+
+    #[test]
+    fn view_settings_round_trip_all_axis_scale_keys() {
+        for key in [
+            "linear",
+            "log",
+            "arcsinh:150",
+            "biex:100,4.5,1,0.5,0",
+            "logicle:100,4.5,1,0.5,0",
+            "hyperlog:100,4.5,0",
+            "robustlog:10",
+            "miltenyi:10",
+        ] {
+            let json = format!(
+                r#"{{
+                    "version": 1,
+                    "view": {{
+                        "mode": "dots",
+                        "x_scale": "{key}",
+                        "y_scale": "{key}",
+                        "point_color": [31, 119, 180],
+                        "gradient": true,
+                        "contour_levels": 8,
+                        "x_range": [0, 1],
+                        "y_range": [0, 1]
+                    }}
+                }}"#
+            );
+            let back = from_json(&json).unwrap();
+            let parsed = crate::transform::AxisScale::from_key(key);
+            assert_eq!(
+                back.view.x_scale, key,
+                "axis scale {key} did not round-trip"
+            );
+            assert_eq!(back.view.y_scale, key);
+            assert_eq!(parsed.key(), key);
+        }
     }
 }

@@ -3,21 +3,24 @@
 [![Rust](https://img.shields.io/badge/rust-1.99+-orange.svg)](https://rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://img.shields.io/badge/license-MIT-blue.svg)
 
-`flowers` is an open-source flow cytometry analysis tool written in Rust. It provides FCS file parsing, compensation, multi-gate gating (rectangular, elliptical, polygon, quadrant, bilinear, boolean), population statistics, SVG plotting, and a desktop GUI.
+`flowers` is an open-source flow cytometry analysis tool written in Rust. It provides FCS file parsing, compensation, multi-gate gating (rectangular, elliptical, polygon, quadrant, bilinear, boolean, mask), population statistics, SVG plotting, and a desktop GUI.
 
 ## Features
 
 | Feature | Description |
 |---------|-------------|
 | **FCS parsing** | FCS 2.0 / 3.0 / 3.1 listmode files (32-bit float and 64-bit double data, little/big-endian) |
-| **Compensation** | Spillover-matrix compensation from CSV matrices |
-| **Gating** | Rectangular, elliptical, polygonal, quadrant, bilinear (line) and boolean (AND/OR/NOT) gates |
+| **Compensation** | Spillover-matrix compensation with a matrix editor; load CSV/spillover matrices, auto-apply FCS `$SPILLOVER`, and remove compensation to restore raw data |
+| **Gating** | Rectangular, elliptical, polygonal, quadrant, bilinear (line), boolean (AND/OR/NOT), 1D range and time gates; mask gates and file-mask import (event indices or packed bitsets); statistic-tethered range gates (median/mean/percentile ± offset or factor); rectangle ↔ ellipse ↔ polygon conversion, uniform scaling, adjustable outline width and median-cross overlays; all positive/negative boolean gate combinations and identity/reference gates with cycle detection; spider (wedge/annulus) gates and curly quadrants with exponential dividers; density-based magnetic snapping while drawing (adjustable radius/strength); gate copy/paste, sibling duplication and same-name synchronization; Gating-ML 1.5/2.0 import/export with compensation extension; gate overlays with population name, count, parent/total percentages, ancestry and backgated ancestor outlines |
 | **Drag-to-create gates** | Draw gates directly on the scatter plot; click to place quadrant/bilinear gates |
 | **Line (bilinear) gate** | Draw a line; the events under it are gated, forming a full-height region the width of the line |
-| **Gate manipulation** | Rotate, enlarge, shrink, or move a gate after drawing it — via drag handles or nudge buttons |
-| **Statistics** | Count, %, mean, median, SD, CV, geometric MFI, min, max per population |
+| **Gate manipulation** | Rotate, enlarge, shrink, or move a gate after drawing it — drag its body, use drag handles, or use the nudge buttons |
+| **Automatic gating** | Convex-hull polygon autogates, histogram gate-on-peaks, Otsu/BifurGate low/high splits, and deterministic k-means cluster gates |
+| **Statistics** | Count, %, mean, median, SD, CV, geometric MFI, min, max, mode, percentiles, robust SD/CV, and CDF per population |
 | **Visualization** | SVG dot plots, 1D histograms, density gradients, and topographic contour views |
-| **Axis control** | Per-axis linear/log scales, editable ranges (scientific-notation display, proportional drag speed, type `1e7`), and one-click auto-fit |
+| **Axis control** | Per-axis linear/log scales, editable ranges (scientific-notation display, proportional drag speed, type `1e7`), −/+ zoom buttons, and one-click auto-fit |
+| **Axis transforms** | Linear, log, arcsinh, biexponential, logicle, hyperlog, robust log, and Miltenyi transforms with forward/inverse round-trip checks and automatic biexponential width basis |
+| **Expanded statistics** | Mode, percentiles (P5/P10/P50/P90/P95), robust SD/CV, and CDF statistics alongside mean/median/SD/CV/geoMFI/min/max |
 | **Smart default axes** | New files open on FSC-H vs SSC-H (or the best FSC/SSC match) automatically |
 | **Gate hierarchy** | Hierarchical population tree with counts and percentages |
 | **Cross-sample gating** | Apply the same gate set to every loaded FCS file, with a per-file prompt |
@@ -30,7 +33,7 @@
 | **Layout editor** | Drag, resize, reorder and preview plots on a free-form canvas, then export |
 | **Axis label styling** | Rotate, resize, recolour, re-font, or rename each panel's axis labels |
 | **Figure export** | Export single plots or composed layouts as SVG, PNG, JPEG, or TIFF |
-| **Histogram view** | 1D histogram (counts view) of the X-axis channel |
+| **Histogram view** | Smooth 1D histogram (counts view) of the X-axis channel with roughly one bar per pixel |
 | **Per-gate apply control** | Toggle whether each gate applies to all samples or only its owner |
 | **Desktop GUI** | egui-based application: load files, gate populations, export plots |
 | **CLI** | Scriptable command-line interface for batch workflows |
@@ -147,7 +150,9 @@ flowers/
 │   ├── main.rs         # CLI binary (`flowers`)
 │   ├── gui_main.rs     # GUI binary (`flowers-gui`)
 │   ├── fcs.rs          # FCS 2.0/3.0/3.1 parser
-│   ├── gating.rs       # Gates: rect, ellipse, polygon, quadrant, bilinear, boolean
+│   ├── gating.rs       # Gates: rect, ellipse, polygon, quadrant, bilinear, boolean, range, time, mask
+│   ├── gatingml.rs     # Gating-ML 1.5/2.0 import/export
+│   ├── magnetic.rs     # Density-field magnetic snapping for gate drawing
 │   ├── compensation.rs # Spillover-matrix compensation
 │   ├── statistics.rs   # Population statistics (count, %, mean, SD, CV, geo-MFI)
 │   ├── plot.rs         # SVG plots, density grids & contour extraction

@@ -118,10 +118,8 @@ impl FcsParser {
             let key_e = format!("$P{n}E");
             let key_r = format!("$P{n}R");
 
-            let name = keyword_str(&keywords, &key_n)?
-                .unwrap_or_else(|| format!("P{n}"));
-            let description = keyword_str(&keywords, &key_s)?
-                .unwrap_or_else(|| name.clone());
+            let name = keyword_str(&keywords, &key_n)?.unwrap_or_else(|| format!("P{n}"));
+            let description = keyword_str(&keywords, &key_s)?.unwrap_or_else(|| name.clone());
             let exponent: f32 = keyword_f32(&keywords, &key_e).unwrap_or(0.0);
             let range: f32 = keyword_f32(&keywords, &key_r).unwrap_or(4.0);
 
@@ -195,7 +193,10 @@ impl FcsParser {
 /// Read an 8-byte, space-padded, right-justified pointer from the header.
 ///
 /// Returns the raw byte offset (0-indexed) as stored in the file.
-fn read_header_pointer(header: &[u8; FCS_HEADER_LEN], (start, end): (usize, usize)) -> Result<usize, FcsError> {
+fn read_header_pointer(
+    header: &[u8; FCS_HEADER_LEN],
+    (start, end): (usize, usize),
+) -> Result<usize, FcsError> {
     let field = std::str::from_utf8(&header[start..end])
         .map_err(|e| FcsError::Parse(format!("invalid header pointer: {e}")))?;
     let trimmed = field.trim();
@@ -243,19 +244,23 @@ fn keyword_str(keywords: &HashMap<String, String>, key: &str) -> Result<Option<S
 }
 
 fn keyword_usize(keywords: &HashMap<String, String>, key: &str) -> Result<usize, FcsError> {
-    let value = keyword_str(keywords, key)?
-        .ok_or_else(|| FcsError::MissingKeyword(key.to_string()))?;
-    value
-        .parse::<usize>()
-        .map_err(|e| FcsError::Parse(format!("keyword '{key}' value '{value}' is not a usize: {e}")))
+    let value =
+        keyword_str(keywords, key)?.ok_or_else(|| FcsError::MissingKeyword(key.to_string()))?;
+    value.parse::<usize>().map_err(|e| {
+        FcsError::Parse(format!(
+            "keyword '{key}' value '{value}' is not a usize: {e}"
+        ))
+    })
 }
 
 fn keyword_f32(keywords: &HashMap<String, String>, key: &str) -> Result<f32, FcsError> {
-    let value = keyword_str(keywords, key)?
-        .ok_or_else(|| FcsError::MissingKeyword(key.to_string()))?;
-    value
-        .parse::<f32>()
-        .map_err(|e| FcsError::Parse(format!("keyword '{key}' value '{value}' is not an f32: {e}")))
+    let value =
+        keyword_str(keywords, key)?.ok_or_else(|| FcsError::MissingKeyword(key.to_string()))?;
+    value.parse::<f32>().map_err(|e| {
+        FcsError::Parse(format!(
+            "keyword '{key}' value '{value}' is not an f32: {e}"
+        ))
+    })
 }
 
 #[cfg(test)]

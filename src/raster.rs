@@ -150,9 +150,18 @@ mod tests {
 
     #[test]
     fn format_from_extension() {
-        assert_eq!(ImageFormat::from_path(Path::new("a.png")), Some(ImageFormat::Png));
-        assert_eq!(ImageFormat::from_path(Path::new("a.JPG")), Some(ImageFormat::Jpeg));
-        assert_eq!(ImageFormat::from_path(Path::new("a.tif")), Some(ImageFormat::Tiff));
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a.png")),
+            Some(ImageFormat::Png)
+        );
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a.JPG")),
+            Some(ImageFormat::Jpeg)
+        );
+        assert_eq!(
+            ImageFormat::from_path(Path::new("a.tif")),
+            Some(ImageFormat::Tiff)
+        );
         assert_eq!(ImageFormat::from_path(Path::new("a.svg")), None);
     }
 

@@ -30,21 +30,22 @@
 use eframe::egui;
 use egui_plot::{Bar, BarChart, Line, Plot, PlotBounds, Points, Polygon};
 
-use crate::export::{write_populations_csv, PopulationRow};
+use crate::compensation::CompensationMatrix;
+use crate::export::{PopulationRow, statistics_rows, write_populations_csv, write_statistics_csv};
 use crate::fcs::{FcsFile, FcsParser};
 use crate::gating::{
     EllipseGate, Gate as GatingGate, LineGate, Quadrant, QuadrantGate, RectangularGate,
 };
-use crate::layout::{
-    render_layout_free, LayoutOptions, LayoutPlacement,
-};
+use crate::layout::{LayoutOptions, LayoutPlacement, render_layout_free};
 use crate::plot::{
-    density_grid, density_rgb, dot_plot_svg, point_densities, AxisScale, PlotOverlay, PlotStyle,
+    AxisScale, GateLabelSettings, OverlayLabel, PlotOverlay, PlotStyle, PopulationLabel,
+    backgate_ancestors, density_grid, density_rgb, dot_plot_svg, point_densities,
 };
-use crate::raster::{save_svg_as_image, ImageFormat};
 use crate::project::{
     GateShape, Project, ProjectGate, ProjectLabel, ProjectPanel, ProjectSample, ViewSettings,
 };
+use crate::raster::{ImageFormat, save_svg_as_image};
+use crate::transform::{AutorangeRule, LookupTable};
 
 // ---------------------------------------------------------------------------
 // Flow_r-inspired design system
@@ -57,14 +58,14 @@ use crate::project::{
 /// Colours for the current theme, mirroring the flow_r design tokens.
 #[derive(Clone, Copy)]
 struct Palette {
-    bg: egui::Color32,     // page background
-    surface: egui::Color32, // card background
-    border: egui::Color32,  // card / hairline border
-    ink: egui::Color32,    // primary text
-    muted: egui::Color32,  // secondary text
-    teal: egui::Color32,   // primary accent
+    bg: egui::Color32,         // page background
+    surface: egui::Color32,    // card background
+    border: egui::Color32,     // card / hairline border
+    ink: egui::Color32,        // primary text
+    muted: egui::Color32,      // secondary text
+    teal: egui::Color32,       // primary accent
     teal_light: egui::Color32, // teal tint fill
-    soft: egui::Color32,   // subtle fill (hover / active strips)
+    soft: egui::Color32,       // subtle fill (hover / active strips)
 }
 
 impl Palette {
@@ -78,17 +79,17 @@ impl Palette {
                 muted: egui::Color32::from_rgb(148, 163, 184), // #94a3b8
                 teal: egui::Color32::from_rgb(94, 234, 212),   // #5eead4
                 teal_light: egui::Color32::from_rgb(15, 118, 110),
-                soft: egui::Color32::from_rgb(38, 50, 69),     // #263245
+                soft: egui::Color32::from_rgb(38, 50, 69), // #263245
             },
             Theme::Light => Palette {
-                bg: egui::Color32::from_rgb(244, 246, 249),    // #f4f6f9
+                bg: egui::Color32::from_rgb(244, 246, 249), // #f4f6f9
                 surface: egui::Color32::WHITE,
                 border: egui::Color32::from_rgb(226, 232, 240), // #e2e8f0
-                ink: egui::Color32::from_rgb(15, 23, 42),      // #0f172a
-                muted: egui::Color32::from_rgb(100, 116, 139), // #64748b
-                teal: egui::Color32::from_rgb(15, 118, 110),   // #0f766e
+                ink: egui::Color32::from_rgb(15, 23, 42),       // #0f172a
+                muted: egui::Color32::from_rgb(100, 116, 139),  // #64748b
+                teal: egui::Color32::from_rgb(15, 118, 110),    // #0f766e
                 teal_light: egui::Color32::from_rgb(204, 251, 241),
-                soft: egui::Color32::from_rgb(248, 250, 252),  // #f8fafc
+                soft: egui::Color32::from_rgb(248, 250, 252), // #f8fafc
             },
         }
     }
@@ -119,12 +120,7 @@ fn panel_frame(p: Palette) -> egui::Frame {
 /// content on the right, followed by a hairline rule.
 fn card_head(ui: &mut egui::Ui, p: Palette, title: &str, trailing: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(title)
-                .strong()
-                .small()
-                .color(p.ink),
-        );
+        ui.label(egui::RichText::new(title).strong().small().color(p.ink));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             trailing(ui);
         });
@@ -137,32 +133,25 @@ fn card_head(ui: &mut egui::Ui, p: Palette, title: &str, trailing: impl FnOnce(&
 /// Uses the default text size so it stays consistent with dropdowns and
 /// other controls rather than appearing smaller than them.
 fn section_label(ui: &mut egui::Ui, p: Palette, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .color(p.muted),
-    );
+    ui.label(egui::RichText::new(text).color(p.muted));
 }
 
 /// A small, teal-accented primary button.
 fn primary_button(ui: &mut egui::Ui, p: Palette, text: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(
-            egui::RichText::new(text).small().strong().color(p.surface),
-        )
-        .fill(p.teal)
-        .rounding(6.0),
+        egui::Button::new(egui::RichText::new(text).small().strong().color(p.surface))
+            .fill(p.teal)
+            .rounding(6.0),
     )
 }
 
 /// An outlined secondary button.
 fn secondary_button(ui: &mut egui::Ui, p: Palette, text: &str) -> egui::Response {
     ui.add(
-        egui::Button::new(
-            egui::RichText::new(text).small().color(p.ink),
-        )
-        .fill(p.soft)
-        .stroke(egui::Stroke::new(1.0_f32, p.border))
-        .rounding(6.0),
+        egui::Button::new(egui::RichText::new(text).small().color(p.ink))
+            .fill(p.soft)
+            .stroke(egui::Stroke::new(1.0_f32, p.border))
+            .rounding(6.0),
     )
 }
 
@@ -173,12 +162,10 @@ fn secondary_button_hover(
     text: &str,
     hover: &str,
 ) -> egui::Response {
-    let button = egui::Button::new(
-        egui::RichText::new(text).small().color(p.ink),
-    )
-    .fill(p.soft)
-    .stroke(egui::Stroke::new(1.0_f32, p.border))
-    .rounding(6.0);
+    let button = egui::Button::new(egui::RichText::new(text).small().color(p.ink))
+        .fill(p.soft)
+        .stroke(egui::Stroke::new(1.0_f32, p.border))
+        .rounding(6.0);
     ui.add(button).on_hover_text(hover)
 }
 
@@ -190,9 +177,16 @@ fn tool_button(ui: &mut egui::Ui, p: Palette, label: &str, active: bool) -> egui
         .color(if active { p.teal } else { p.muted });
     let btn = egui::Button::new(text).rounding(6.0);
     if active {
-        ui.add_enabled(false, btn.fill(p.teal_light).stroke(egui::Stroke::new(1.0_f32, p.teal)))
+        ui.add_enabled(
+            false,
+            btn.fill(p.teal_light)
+                .stroke(egui::Stroke::new(1.0_f32, p.teal)),
+        )
     } else {
-        ui.add(btn.fill(p.soft).stroke(egui::Stroke::new(1.0_f32, p.border)))
+        ui.add(
+            btn.fill(p.soft)
+                .stroke(egui::Stroke::new(1.0_f32, p.border)),
+        )
     }
 }
 
@@ -214,11 +208,7 @@ fn header_bar(ui: &mut egui::Ui, p: Palette, menu: impl FnOnce(&mut egui::Ui)) {
             });
         ui.add_space(10.0);
         ui.vertical(|ui| {
-            ui.label(
-                egui::RichText::new("flowers")
-                    .strong()
-                    .color(p.ink),
-            );
+            ui.label(egui::RichText::new("flowers").strong().color(p.ink));
             ui.label(
                 egui::RichText::new("flow cytometry analysis")
                     .small()
@@ -243,6 +233,8 @@ enum ViewMode {
     Dots,
     Contour,
     Histogram,
+    Pseudocolor,
+    Zebra,
 }
 
 impl ViewMode {
@@ -251,6 +243,8 @@ impl ViewMode {
             ViewMode::Dots => "Dots",
             ViewMode::Contour => "Contour",
             ViewMode::Histogram => "Histogram",
+            ViewMode::Pseudocolor => "Pseudocolor",
+            ViewMode::Zebra => "Zebra",
         }
     }
 }
@@ -297,15 +291,9 @@ enum GateKind {
         angle: f64,
     },
     /// Free-form polygon (vertices in data coordinates).
-    Polygon {
-        vertices: Vec<[f64; 2]>,
-    },
+    Polygon { vertices: Vec<[f64; 2]> },
     /// One wedge of a 4-way quadrant split.
-    Quadrant {
-        x: f64,
-        y: f64,
-        quad: Quadrant,
-    },
+    Quadrant { x: f64, y: f64, quad: Quadrant },
     /// A line gate: events on one side of a drawn line segment, restricted to
     /// the segment's horizontal extent (the "region under the line").
     Bilinear {
@@ -369,11 +357,18 @@ impl GateKind {
             GateKind::Polygon { vertices } => Box::new(crate::gating::PolygonGate::new(
                 x_idx,
                 y_idx,
-                vertices.iter().map(|p| (p[0] as f32, p[1] as f32)).collect(),
+                vertices
+                    .iter()
+                    .map(|p| (p[0] as f32, p[1] as f32))
+                    .collect(),
             )),
-            GateKind::Quadrant { x, y, quad } => {
-                Box::new(QuadrantGate::new(x_idx, y_idx, *x as f32, *y as f32, quad.clone()))
-            }
+            GateKind::Quadrant { x, y, quad } => Box::new(QuadrantGate::new(
+                x_idx,
+                y_idx,
+                *x as f32,
+                *y as f32,
+                quad.clone(),
+            )),
             GateKind::Bilinear {
                 x1,
                 y1,
@@ -381,13 +376,7 @@ impl GateKind {
                 y2,
                 below,
             } => Box::new(LineGate::new(
-                x_idx,
-                y_idx,
-                *x1 as f32,
-                *y1 as f32,
-                *x2 as f32,
-                *y2 as f32,
-                *below,
+                x_idx, y_idx, *x1 as f32, *y1 as f32, *x2 as f32, *y2 as f32, *below,
             )),
         }
     }
@@ -411,15 +400,10 @@ impl GateKind {
                 let hw = (x_max - x_min) / 2.0;
                 let hh = (y_max - y_min) / 2.0;
                 let (s, c) = angle.sin_cos();
-                let mut pts: Vec<[f64; 2]> = [
-                    [-hw, -hh],
-                    [hw, -hh],
-                    [hw, hh],
-                    [-hw, hh],
-                ]
-                .iter()
-                .map(|[lx, ly]| [cx + lx * c - ly * s, cy + lx * s + ly * c])
-                .collect();
+                let mut pts: Vec<[f64; 2]> = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]]
+                    .iter()
+                    .map(|[lx, ly]| [cx + lx * c - ly * s, cy + lx * s + ly * c])
+                    .collect();
                 pts.push(pts[0]);
                 pts
             }
@@ -478,13 +462,7 @@ impl GateKind {
                 let ya = line_y_at(*lx1, *ly1, *lx2, *ly2, xa).clamp(y0, y1);
                 let yb = line_y_at(*lx1, *ly1, *lx2, *ly2, xb).clamp(y0, y1);
                 let y_edge = if *below { y0 } else { y1 };
-                vec![
-                    [xa, ya],
-                    [xb, yb],
-                    [xb, y_edge],
-                    [xa, y_edge],
-                    [xa, ya],
-                ]
+                vec![[xa, ya], [xb, yb], [xb, y_edge], [xa, y_edge], [xa, ya]]
             }
         }
     }
@@ -494,10 +472,9 @@ impl GateKind {
         let (x0, x1) = x_range;
         let (y0, y1) = y_range;
         match self {
-            GateKind::Quadrant { x, y, .. } => vec![
-                vec![[*x, y0], [*x, y1]],
-                vec![[x0, *y], [x1, *y]],
-            ],
+            GateKind::Quadrant { x, y, .. } => {
+                vec![vec![[*x, y0], [*x, y1]], vec![[x0, *y], [x1, *y]]]
+            }
             GateKind::Bilinear {
                 x1: lx1,
                 y1: ly1,
@@ -632,9 +609,7 @@ impl GateKind {
             GateKind::Rect { angle, .. } | GateKind::Ellipse { angle, .. } => *angle += delta,
             // Quadrants are defined by axis-aligned splits; rotation does not apply.
             GateKind::Quadrant { .. } => {}
-            GateKind::Bilinear {
-                x1, y1, x2, y2, ..
-            } => {
+            GateKind::Bilinear { x1, y1, x2, y2, .. } => {
                 let p1 = rotate_point([*x1, *y1], center, delta);
                 let p2 = rotate_point([*x2, *y2], center, delta);
                 *x1 = p1[0];
@@ -677,9 +652,7 @@ impl GateKind {
                 *x = center[0] + (*x - center[0]) * f;
                 *y = center[1] + (*y - center[1]) * f;
             }
-            GateKind::Bilinear {
-                x1, y1, x2, y2, ..
-            } => {
+            GateKind::Bilinear { x1, y1, x2, y2, .. } => {
                 *x1 = center[0] + (*x1 - center[0]) * f;
                 *y1 = center[1] + (*y1 - center[1]) * f;
                 *x2 = center[0] + (*x2 - center[0]) * f;
@@ -753,7 +726,10 @@ impl GateKind {
             }
             GateKind::Polygon { vertices, .. } => {
                 let c = centroid(vertices);
-                let max_y = vertices.iter().map(|p| p[1]).fold(f64::NEG_INFINITY, f64::max);
+                let max_y = vertices
+                    .iter()
+                    .map(|p| p[1])
+                    .fold(f64::NEG_INFINITY, f64::max);
                 let span = (max_y - c[1]).abs().max(1e-9);
                 let mut out: Vec<([f64; 2], HandleId)> = vertices
                     .iter()
@@ -806,8 +782,16 @@ impl GateKind {
                 let (s, c) = angle.sin_cos();
                 let lx = (x - cx) * c + (y - cy) * s;
                 let ly = -(x - cx) * s + (y - cy) * c;
-                let ex = if rx.abs() < 1e-12 { f64::INFINITY } else { lx / rx };
-                let ey = if ry.abs() < 1e-12 { f64::INFINITY } else { ly / ry };
+                let ex = if rx.abs() < 1e-12 {
+                    f64::INFINITY
+                } else {
+                    lx / rx
+                };
+                let ey = if ry.abs() < 1e-12 {
+                    f64::INFINITY
+                } else {
+                    ly / ry
+                };
                 ex * ex + ey * ey <= 1.0
             }
             GateKind::Quadrant { x: sx, y: sy, quad } => match quad {
@@ -819,8 +803,7 @@ impl GateKind {
             GateKind::Bilinear { x1, y1, x2, y2, .. } => {
                 // Treat a click near the line as a grab on the gate body.
                 let seg2 = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).max(1e-12);
-                let t = (((x - x1) * (x2 - x1) + (y - y1) * (y2 - y1)) / seg2)
-                    .clamp(0.0, 1.0);
+                let t = (((x - x1) * (x2 - x1) + (y - y1) * (y2 - y1)) / seg2).clamp(0.0, 1.0);
                 let px = x1 + t * (x2 - x1);
                 let py = y1 + t * (y2 - y1);
                 let tol = (seg2.sqrt() * 0.04).max(1e-9);
@@ -847,8 +830,7 @@ fn regular_polygon(cx: f64, cy: f64, rx: f64, ry: f64, n: usize) -> Vec<[f64; 2]
     let n = n.max(3);
     (0..n)
         .map(|i| {
-            let a = -std::f64::consts::FRAC_PI_2
-                + 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+            let a = -std::f64::consts::FRAC_PI_2 + 2.0 * std::f64::consts::PI * i as f64 / n as f64;
             [cx + rx * a.cos(), cy + ry * a.sin()]
         })
         .collect()
@@ -980,9 +962,7 @@ fn apply_manipulation(
     let center = snapshot.center();
     match target {
         ManipTarget::Move => g.translate(cur[0] - start[0], cur[1] - start[1]),
-        ManipTarget::Handle(HandleId::Center) => {
-            g.translate(cur[0] - start[0], cur[1] - start[1])
-        }
+        ManipTarget::Handle(HandleId::Center) => g.translate(cur[0] - start[0], cur[1] - start[1]),
         ManipTarget::Handle(HandleId::Rotate) => {
             let a0 = (start[1] - center[1]).atan2(start[0] - center[0]);
             let a1 = (cur[1] - center[1]).atan2(cur[0] - center[0]);
@@ -1089,7 +1069,21 @@ struct ManipSession {
 enum InteractOutcome {
     Create { start: [f64; 2], end: [f64; 2] },
     Update { gate: usize, kind: GateKind },
+    Select(usize),
     Click([f64; 2]),
+}
+
+/// Topmost gate whose body contains `pos`, preferring the selected gate when
+/// several overlap.
+fn gate_at(gates: &[GateDef], pos: [f64; 2], selected: Option<usize>) -> Option<usize> {
+    if let Some(i) = selected
+        && gates.get(i).is_some_and(|g| g.kind.contains_point(pos))
+    {
+        return Some(i);
+    }
+    (0..gates.len())
+        .rev()
+        .find(|&i| gates[i].kind.contains_point(pos))
 }
 
 /// Nearest handle within `tol` (data units) of `pos`.
@@ -1119,35 +1113,41 @@ fn drive_interact(
 ) -> Option<InteractOutcome> {
     // Keep the in-progress creation rectangle up to date.
     if it.drag_start.is_some()
-        && let Some(p) = inter.pointer {
-            it.drag_current = Some(p);
-        }
+        && let Some(p) = inter.pointer
+    {
+        it.drag_current = Some(p);
+    }
 
     let mut outcome = None;
 
     // A drag just started: choose manipulation vs. creation.
     if let Some(start) = inter.started {
         let mut creating = true;
+        // 1. A handle on the selected gate always wins.
         if let Some(gi) = selected
-            && let Some(gate) = gates.get(gi) {
-                if let Some(h) = nearest_handle(&gate.kind, start, tol) {
-                    it.manip = Some(ManipSession {
-                        gate: gi,
-                        snapshot: gate.kind.clone(),
-                        target: ManipTarget::Handle(h),
-                        start,
-                    });
-                    creating = false;
-                } else if gate.kind.contains_point(start) {
-                    it.manip = Some(ManipSession {
-                        gate: gi,
-                        snapshot: gate.kind.clone(),
-                        target: ManipTarget::Move,
-                        start,
-                    });
-                    creating = false;
-                }
-            }
+            && let Some(gate) = gates.get(gi)
+            && let Some(h) = nearest_handle(&gate.kind, start, tol)
+        {
+            it.manip = Some(ManipSession {
+                gate: gi,
+                snapshot: gate.kind.clone(),
+                target: ManipTarget::Handle(h),
+                start,
+            });
+            creating = false;
+        }
+        // 2. Otherwise any gate body under the pointer can be dragged. This
+        //    also selects an unselected gate, so users do not have to select a
+        //    rectangle / ellipse before moving it.
+        if creating && let Some(gi) = gate_at(gates, start, selected) {
+            it.manip = Some(ManipSession {
+                gate: gi,
+                snapshot: gates[gi].kind.clone(),
+                target: ManipTarget::Move,
+                start,
+            });
+            creating = false;
+        }
         if creating {
             it.drag_start = Some(start);
             it.drag_current = Some(start);
@@ -1164,17 +1164,23 @@ fn drive_interact(
         it.drag_start = None;
         it.drag_current = None;
     } else if let Some(m) = &it.manip
-        && let Some(cur) = inter.pointer {
-            outcome = Some(InteractOutcome::Update {
-                gate: m.gate,
-                kind: apply_manipulation(&m.snapshot, &m.target, m.start, cur),
-            });
-        }
+        && let Some(cur) = inter.pointer
+    {
+        outcome = Some(InteractOutcome::Update {
+            gate: m.gate,
+            kind: apply_manipulation(&m.snapshot, &m.target, m.start, cur),
+        });
+    }
 
-    if let Some(p) = inter.clicked
-        && matches!(new_type, NewGateType::Quadrant | NewGateType::Bilinear) {
+    if let Some(p) = inter.clicked {
+        // Clicking a gate body selects it; clicking empty space places a
+        // quadrant / bilinear gate when that tool is active.
+        if let Some(gi) = gate_at(gates, p, selected) {
+            outcome = Some(InteractOutcome::Select(gi));
+        } else if matches!(new_type, NewGateType::Quadrant | NewGateType::Bilinear) {
             outcome = Some(InteractOutcome::Click(p));
         }
+    }
 
     outcome
 }
@@ -1200,6 +1206,36 @@ impl GateDef {
     fn to_gate(&self) -> Box<dyn GatingGate> {
         self.kind.to_gate(self.x_idx, self.y_idx)
     }
+}
+
+/// A gate copied to the internal clipboard.
+///
+/// The geometry is stored as the project's serializable [`GateShape`] so a copy
+/// can be pasted into another workspace (or saved as text) without depending on
+/// the live GUI objects.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct CopiedGate {
+    name: String,
+    x_idx: usize,
+    y_idx: usize,
+    parent: Option<usize>,
+    color: [u8; 3],
+    apply_to_all: bool,
+    kind: GateShape,
+}
+
+/// Choose `base` when no gate uses it, otherwise `base 2`, `base 3`, ...
+fn unique_gate_name(gates: &[GateDef], base: &str) -> String {
+    if !gates.iter().any(|g| g.name == base) {
+        return base.to_string();
+    }
+    for n in 2.. {
+        let candidate = format!("{base} {n}");
+        if !gates.iter().any(|g| g.name == candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("name space is infinite")
 }
 
 /// Computes the event indices for every gate, following the parent hierarchy.
@@ -1283,9 +1319,10 @@ fn children_map(gates: &[GateDef]) -> Vec<Vec<usize>> {
     let mut children = vec![Vec::new(); gates.len()];
     for (i, gate) in gates.iter().enumerate() {
         if let Some(p) = gate.parent
-            && p < gates.len() {
-                children[p].push(i);
-            }
+            && p < gates.len()
+        {
+            children[p].push(i);
+        }
     }
     children
 }
@@ -1314,14 +1351,14 @@ fn line_y_at(x1: f64, y1: f64, x2: f64, y2: f64, x: f64) -> f64 {
 
 fn gate_color(i: usize) -> egui::Color32 {
     const PALETTE: [(u8, u8, u8); 8] = [
-        (255, 140, 0),  // orange
-        (0, 170, 220),  // cyan
-        (40, 190, 80),  // green
-        (215, 60, 200), // magenta
-        (230, 200, 30), // yellow
-        (120, 120, 255),// periwinkle
-        (255, 100, 140),// pink
-        (200, 60, 40),  // red
+        (255, 140, 0),   // orange
+        (0, 170, 220),   // cyan
+        (40, 190, 80),   // green
+        (215, 60, 200),  // magenta
+        (230, 200, 30),  // yellow
+        (120, 120, 255), // periwinkle
+        (255, 100, 140), // pink
+        (200, 60, 40),   // red
     ];
     let (r, g, b) = PALETTE[i % PALETTE.len()];
     egui::Color32::from_rgb(r, g, b)
@@ -1341,6 +1378,39 @@ struct GateVisual {
     lines: Vec<Vec<[f64; 2]>>,
     color: egui::Color32,
     selected: bool,
+    /// Outline width in points, from the view settings.
+    line_width: f32,
+    /// Optional median-cross overlay in data coordinates.
+    median: Option<[f64; 2]>,
+    /// Optional population label: text and anchor in data coordinates.
+    label: Option<(String, [f64; 2])>,
+    /// Draw this gate as a dashed backgated ancestor outline.
+    backgate: bool,
+}
+
+/// Outline stroke for a gate overlay, honouring the configured line width.
+fn gate_stroke(g: &GateVisual) -> egui::Stroke {
+    let width = if g.selected {
+        g.line_width + 1.0
+    } else {
+        g.line_width
+    }
+    .max(0.5);
+    egui::Stroke::new(width, g.color)
+}
+
+/// Mean of the finite vertices, used to anchor population labels.
+fn polygon_centroid(points: &[[f64; 2]]) -> Option<[f64; 2]> {
+    let mut sum = [0.0f64, 0.0f64];
+    let mut n = 0usize;
+    for point in points {
+        if point[0].is_finite() && point[1].is_finite() {
+            sum[0] += point[0];
+            sum[1] += point[1];
+            n += 1;
+        }
+    }
+    (n > 0).then(|| [sum[0] / n as f64, sum[1] / n as f64])
 }
 
 /// Everything needed to draw one plot.
@@ -1353,6 +1423,9 @@ struct PlotCfg {
     point_color: egui::Color32,
     gradient: bool,
     view: ViewMode,
+    density_map: crate::plot::DensityMap,
+    /// Extra populations/samples drawn on the shared axes (V2).
+    data_overlays: Vec<crate::plot::DataOverlay>,
     contour_levels: usize,
     gates: Vec<GateVisual>,
     /// Draggable manipulation handles for the selected gate (data coords).
@@ -1363,6 +1436,23 @@ struct PlotCfg {
     /// When true, the creation drag shows a line (for line/bilinear gates)
     /// instead of a rectangle.
     line_preview: bool,
+    // -- V5 graph controls -------------------------------------------------
+    smoothing: f32,
+    resolution: usize,
+    outlier_clip_percent: f64,
+    large_dots: bool,
+    grid: bool,
+    medians: bool,
+    show_event_numbers: bool,
+    show_names_frequencies: bool,
+    notation: crate::plot::TickNotation,
+    show_axis_labels: bool,
+    show_ticks: bool,
+    show_numbers: bool,
+    /// Draw adjunct X/Y histograms along the plot axes (V6).
+    axis_histograms: bool,
+    /// The display axes were swapped; gate editing is disabled.
+    transposed: bool,
 }
 
 /// Interaction state passed into / out of [`show_plot`].
@@ -1388,8 +1478,42 @@ fn normalize_span(a: f64, b: f64) -> (f64, f64) {
     }
 }
 
+/// Draws a small horizontal gradient bar for a density colour map (V1).
+fn density_legend_ui(ui: &mut egui::Ui, map: &crate::plot::DensityMap) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(110.0, 10.0), egui::Sense::hover());
+    let painter = ui.painter();
+    const STEPS: usize = 32;
+    for i in 0..STEPS {
+        let t0 = i as f64 / STEPS as f64;
+        let t1 = (i + 1) as f64 / STEPS as f64;
+        let (r, g, b) = crate::plot::density_colour(map, t0);
+        let color = egui::Color32::from_rgb(
+            (r * 255.0).round() as u8,
+            (g * 255.0).round() as u8,
+            (b * 255.0).round() as u8,
+        );
+        let x0 = rect.left() + rect.width() * t0 as f32;
+        let x1 = rect.left() + rect.width() * t1 as f32;
+        painter.rect_filled(
+            egui::Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom())),
+            0.0,
+            color,
+        );
+    }
+    painter.rect_stroke(
+        rect,
+        0.0,
+        egui::Stroke::new(1.0_f32, egui::Color32::from_gray(120)),
+    );
+}
+
 /// Draws a single plot (main view, detached population window, or preview).
 fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInteraction) {
+    // Size the plot to the available UI space instead of a fixed size, so it
+    // never overflows its panel and gets clipped by the panels around it (the
+    // plot used to be laid out as a square of the full available width, which
+    // pushed it past the bottom of the panel).
+    let avail = ui.available_rect_before_wrap();
     // Transform the axis ranges into plot space.
     let xr = cfg.x_range;
     let yr = cfg.y_range;
@@ -1409,14 +1533,56 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
         .filter_map(|p| Some([cfg.x_scale.transform(p[0])?, cfg.y_scale.transform(p[1])?]))
         .collect();
 
-    let need_density = cfg.gradient || matches!(cfg.view, ViewMode::Contour);
-    let grid = need_density.then(|| density_grid(&tpoints, bx0, bx1, by0, by1, 128, 128));
-    let densities = grid.as_ref().map(|g| (g.max(), point_densities(&tpoints, g)));
+    let use_density_view = matches!(cfg.view, ViewMode::Pseudocolor | ViewMode::Zebra);
+    let need_density = cfg.gradient || use_density_view || matches!(cfg.view, ViewMode::Contour);
+    let resolution = cfg.resolution.clamp(16, 512);
+    let mut grid =
+        need_density.then(|| density_grid(&tpoints, bx0, bx1, by0, by1, resolution, resolution));
+    if let Some(g) = grid.as_mut() {
+        crate::plot::smooth_density_grid(g, cfg.smoothing);
+    }
+    let densities = grid.as_ref().map(|g| {
+        let dens = point_densities(&tpoints, g);
+        let max_d = crate::plot::clipped_density_max(&dens, cfg.outlier_clip_percent);
+        (max_d, dens)
+    });
 
-    // Bucket points by density (gradient) or keep a single colour.
+    // Bucket points by density (gradient / density-map views) or keep a single colour.
     let mut buckets: Vec<(egui::Color32, Vec<[f64; 2]>)> = Vec::new();
-    if matches!(cfg.view, ViewMode::Dots) {
-        if cfg.gradient {
+    if matches!(
+        cfg.view,
+        ViewMode::Dots | ViewMode::Pseudocolor | ViewMode::Zebra
+    ) {
+        if use_density_view {
+            const NBINS: usize = 32;
+            let mut bins: Vec<Vec<[f64; 2]>> = vec![Vec::new(); NBINS];
+            if let (Some(_g), Some((max_d, dens))) = (&grid, &densities) {
+                for (i, p) in tpoints.iter().enumerate() {
+                    let t = if *max_d > 0.0 {
+                        (dens[i] / max_d).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let b = ((t * (NBINS - 1) as f64).round() as usize).min(NBINS - 1);
+                    bins[b].push(*p);
+                }
+            }
+            for (b, pts) in bins.into_iter().enumerate() {
+                if pts.is_empty() {
+                    continue;
+                }
+                let (r, g, bl) =
+                    crate::plot::density_colour(&cfg.density_map, b as f64 / (NBINS - 1) as f64);
+                buckets.push((
+                    egui::Color32::from_rgb(
+                        (r * 255.0).round() as u8,
+                        (g * 255.0).round() as u8,
+                        (bl * 255.0).round() as u8,
+                    ),
+                    pts,
+                ));
+            }
+        } else if cfg.gradient {
             const NBINS: usize = 16;
             let mut bins: Vec<Vec<[f64; 2]>> = vec![Vec::new(); NBINS];
             if let (Some(_g), Some((max_d, dens))) = (&grid, &densities) {
@@ -1443,45 +1609,48 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
     }
 
     // Contour segments.
-    let mut contour_paths: Vec<[ [f64; 2]; 2 ]> = Vec::new();
+    let mut contour_paths: Vec<[[f64; 2]; 2]> = Vec::new();
     if matches!(cfg.view, ViewMode::Contour)
-        && let Some(g) = grid.as_ref() {
-            let max_d = g.max();
-            for level in crate::plot::contour_levels(max_d, cfg.contour_levels) {
-                contour_paths.extend(crate::plot::contour_segments(g, level));
-            }
+        && let Some(g) = grid.as_ref()
+    {
+        let max_d = crate::plot::clipped_density_max(&g.values, cfg.outlier_clip_percent);
+        for level in crate::plot::contour_levels(max_d, cfg.contour_levels) {
+            contour_paths.extend(crate::plot::contour_segments(g, level));
         }
+    }
     let contour_color = egui::Color32::from_rgb(30, 110, 130);
 
     // Histogram bars (for Histogram view mode).
-    let (hist_bars, hist_max_count, hist_bin_w) =
-        if matches!(cfg.view, ViewMode::Histogram) {
-            let xs: Vec<f64> = cfg.points.iter().map(|p| p[0]).collect();
-            let (x0, x1) = cfg.x_range;
-            let bin_count = 50usize;
-            let bin_w = (x1 - x0) / bin_count as f64;
-            let mut counts = vec![0usize; bin_count];
-            for &x in &xs {
-                if !x.is_finite() || x < x0 || x > x1 {
-                    continue;
-                }
-                let bi = ((x - x0) / bin_w) as usize;
-                let bi = bi.min(bin_count - 1);
-                counts[bi] += 1;
+    let (hist_bars, hist_max_count, hist_bin_w) = if matches!(cfg.view, ViewMode::Histogram) {
+        let xs: Vec<f64> = cfg.points.iter().map(|p| p[0]).collect();
+        let (x0, x1) = cfg.x_range;
+        // One bin per horizontal pixel makes the histogram read as a
+        // smooth curve rather than a handful of blocky bars.
+        let plot_px = avail.width().min(avail.height()).max(80.0);
+        let bin_count = ((plot_px - 60.0).max(50.0) as usize).clamp(50, 2000);
+        let bin_w = (x1 - x0) / bin_count as f64;
+        let mut counts = vec![0usize; bin_count];
+        for &x in &xs {
+            if !x.is_finite() || x < x0 || x > x1 {
+                continue;
             }
-            let max_count = counts.iter().max().copied().unwrap_or(1).max(1);
-            let bars: Vec<Bar> = counts
-                .iter()
-                .enumerate()
-                .map(|(i, &c)| {
-                    let center = x0 + (i as f64 + 0.5) * bin_w;
-                    Bar::new(center, c as f64)
-                })
-                .collect();
-            (Some(bars), max_count as f64, bin_w)
-        } else {
-            (None, 0.0, 0.0)
-        };
+            let bi = ((x - x0) / bin_w) as usize;
+            let bi = bi.min(bin_count - 1);
+            counts[bi] += 1;
+        }
+        let max_count = counts.iter().max().copied().unwrap_or(1).max(1);
+        let bars: Vec<Bar> = counts
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| {
+                let center = x0 + (i as f64 + 0.5) * bin_w;
+                Bar::new(center, c as f64)
+            })
+            .collect();
+        (Some(bars), max_count as f64, bin_w)
+    } else {
+        (None, 0.0, 0.0)
+    };
 
     // Override y-range for histogram: counts from 0 to max count.
     let (by0, by1) = if matches!(cfg.view, ViewMode::Histogram) {
@@ -1494,7 +1663,17 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
     // never overflows its panel and gets clipped by the panels around it (the
     // plot used to be laid out as a square of the full available width, which
     // pushed it past the bottom of the panel).
-    let avail = ui.available_rect_before_wrap();
+    let axes_visible = cfg.show_axis_labels || cfg.show_ticks || cfg.show_numbers;
+    let x_axis_label = if cfg.show_axis_labels {
+        cfg.x_label.as_str()
+    } else {
+        ""
+    };
+    let y_axis_label = if cfg.show_axis_labels {
+        cfg.y_label.as_str()
+    } else {
+        ""
+    };
     Plot::new(id)
         .view_aspect(1.0)
         .width(avail.width())
@@ -1502,13 +1681,131 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
         .allow_boxed_zoom(false)
         .allow_drag(false)
         .allow_scroll(false)
-        .show_axes(true)
-        .x_axis_label(&cfg.x_label)
-        .y_axis_label(&cfg.y_label)
-        .x_axis_formatter(|mark, _range| crate::plot::format_tick(mark.value, cfg.x_scale))
-        .y_axis_formatter(|mark, _range| crate::plot::format_tick(mark.value, cfg.y_scale))
+        .show_axes(egui::Vec2b::new(axes_visible, axes_visible))
+        .show_grid(egui::Vec2b::new(cfg.grid, cfg.grid))
+        .x_axis_label(x_axis_label)
+        .y_axis_label(y_axis_label)
+        // Keep the rotated Y label clear of the tick numbers; egui_plot packs
+        // them tightly together at the default width.
+        .y_axis_min_width(72.0)
+        .x_axis_formatter(|mark, _range| {
+            if cfg.show_numbers {
+                crate::plot::format_tick_with(mark.value, &cfg.x_scale, cfg.notation)
+            } else {
+                String::new()
+            }
+        })
+        .y_axis_formatter(|mark, _range| {
+            if cfg.show_numbers {
+                crate::plot::format_tick_with(mark.value, &cfg.y_scale, cfg.notation)
+            } else {
+                String::new()
+            }
+        })
         .show(ui, |plot_ui| {
             plot_ui.set_plot_bounds(PlotBounds::from_min_max([bx0, by0], [bx1, by1]));
+
+            // Global median lines (V5).
+            if cfg.medians && !matches!(cfg.view, ViewMode::Histogram) {
+                let xs: Vec<f64> = cfg.points.iter().map(|p| p[0]).collect();
+                let ys: Vec<f64> = cfg.points.iter().map(|p| p[1]).collect();
+                let median_color = cfg.point_color.gamma_multiply(0.75);
+                if let Some(mx) = crate::plot::median_of(&xs)
+                    .and_then(|v| cfg.x_scale.transform(v))
+                    .filter(|v| *v >= bx0 && *v <= bx1)
+                {
+                    plot_ui.line(
+                        Line::new(vec![[mx, by0], [mx, by1]])
+                            .color(median_color)
+                            .width(1.0_f32)
+                            .style(egui_plot::LineStyle::dashed_dense()),
+                    );
+                }
+                if let Some(my) = crate::plot::median_of(&ys)
+                    .and_then(|v| cfg.y_scale.transform(v))
+                    .filter(|v| *v >= by0 && *v <= by1)
+                {
+                    plot_ui.line(
+                        Line::new(vec![[bx0, my], [bx1, my]])
+                            .color(median_color)
+                            .width(1.0_f32)
+                            .style(egui_plot::LineStyle::dashed_dense()),
+                    );
+                }
+            }
+
+            // Event count annotation (V5).
+            if cfg.show_event_numbers {
+                let pos =
+                    egui_plot::PlotPoint::new(bx0 + (bx1 - bx0) * 0.02, by1 - (by1 - by0) * 0.04);
+                plot_ui.text(
+                    egui_plot::Text::new(pos, format!("n = {}", cfg.points.len()))
+                        .color(cfg.point_color)
+                        .anchor(egui::Align2::LEFT_BOTTOM)
+                        .allow_hover(false),
+                );
+            }
+
+            // Adjunct axis histograms (V6): translucent strips inside the plot
+            // area, along the top (X) and right (Y) edges. They use the same
+            // transformed points and visible bounds as the scatter layer.
+            if cfg.axis_histograms && !matches!(cfg.view, ViewMode::Histogram) {
+                let bins = 48usize;
+                let xs: Vec<f64> = tpoints.iter().map(|p| p[0]).collect();
+                let ys: Vec<f64> = tpoints.iter().map(|p| p[1]).collect();
+                let xcounts = crate::plot::smooth_counts(
+                    &crate::plot::axis_histogram_counts(&xs, bx0, bx1, bins),
+                    cfg.smoothing,
+                );
+                let ycounts = crate::plot::smooth_counts(
+                    &crate::plot::axis_histogram_counts(&ys, by0, by1, bins),
+                    cfg.smoothing,
+                );
+                let xmax = xcounts.iter().copied().max().unwrap_or(1).max(1) as f64;
+                let ymax = ycounts.iter().copied().max().unwrap_or(1).max(1) as f64;
+                let band = 0.16;
+                let x_band = (by1 - by0) * band;
+                let y_band = (bx1 - bx0) * band;
+                let bin_w = (bx1 - bx0) / bins as f64;
+                let bin_h = (by1 - by0) / bins as f64;
+                let fill = egui::Color32::from_rgba_unmultiplied(
+                    cfg.point_color.r(),
+                    cfg.point_color.g(),
+                    cfg.point_color.b(),
+                    70,
+                );
+                let stroke = egui::Stroke::NONE;
+                for (b, &count) in xcounts.iter().enumerate() {
+                    if count == 0 {
+                        continue;
+                    }
+                    let h = count as f64 / xmax * x_band;
+                    let x0 = bx0 + b as f64 * bin_w;
+                    let x1 = (x0 + bin_w).min(bx1);
+                    let y0 = by1 - h;
+                    plot_ui.polygon(
+                        Polygon::new(vec![[x0, by1], [x1, by1], [x1, y0], [x0, y0]])
+                            .fill_color(fill)
+                            .stroke(stroke)
+                            .allow_hover(false),
+                    );
+                }
+                for (b, &count) in ycounts.iter().enumerate() {
+                    if count == 0 {
+                        continue;
+                    }
+                    let w = count as f64 / ymax * y_band;
+                    let y0 = by0 + b as f64 * bin_h;
+                    let y1 = (y0 + bin_h).min(by1);
+                    let x0 = bx1 - w;
+                    plot_ui.polygon(
+                        Polygon::new(vec![[bx1, y0], [bx1, y1], [x0, y1], [x0, y0]])
+                            .fill_color(fill)
+                            .stroke(stroke)
+                            .allow_hover(false),
+                    );
+                }
+            }
 
             // Drag preview (created by the user while gating).
             if let (Some(a), Some(b)) = (inter.drag_start, inter.drag_current) {
@@ -1530,55 +1827,124 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
                             [a[0], a[1]],
                         ])
                         .fill_color(egui::Color32::from_rgba_unmultiplied(0, 150, 255, 60))
-                        .stroke(egui::Stroke::new(1.5_f32, egui::Color32::from_rgb(0, 120, 200))),
+                        .stroke(egui::Stroke::new(
+                            1.5_f32,
+                            egui::Color32::from_rgb(0, 120, 200),
+                        )),
                     );
                 }
             }
 
             // Gates.
             for g in &cfg.gates {
-                if g.fill.len() >= 3 {
+                if g.backgate {
+                    // Backgated ancestors: dashed outline, no fill, so they read
+                    // as context rather than as a second active gate.
+                    if g.fill.len() >= 2 {
+                        let mut poly: Vec<[f64; 2]> = g
+                            .fill
+                            .iter()
+                            .filter_map(|p| {
+                                Some([cfg.x_scale.transform(p[0])?, cfg.y_scale.transform(p[1])?])
+                            })
+                            .collect();
+                        if poly.len() >= 2 {
+                            if let Some(first) = poly.first().copied() {
+                                poly.push(first);
+                            }
+                            plot_ui.line(
+                                Line::new(poly)
+                                    .color(g.color.gamma_multiply(0.75))
+                                    .width(g.line_width)
+                                    .style(egui_plot::LineStyle::dashed_dense()),
+                            );
+                        }
+                    }
+                } else if g.fill.len() >= 3 {
                     let poly: Vec<[f64; 2]> = g
                         .fill
                         .iter()
-                        .filter_map(|p| Some([cfg.x_scale.transform(p[0])?, cfg.y_scale.transform(p[1])?]))
+                        .filter_map(|p| {
+                            Some([cfg.x_scale.transform(p[0])?, cfg.y_scale.transform(p[1])?])
+                        })
                         .collect();
                     if poly.len() >= 3 {
                         let fill = if g.selected {
-                            egui::Color32::from_rgba_unmultiplied(g.color.r(), g.color.g(), g.color.b(), 70)
+                            egui::Color32::from_rgba_unmultiplied(
+                                g.color.r(),
+                                g.color.g(),
+                                g.color.b(),
+                                70,
+                            )
                         } else {
-                            egui::Color32::from_rgba_unmultiplied(g.color.r(), g.color.g(), g.color.b(), 30)
+                            egui::Color32::from_rgba_unmultiplied(
+                                g.color.r(),
+                                g.color.g(),
+                                g.color.b(),
+                                30,
+                            )
                         };
-                        let stroke = if g.selected {
-                            egui::Stroke::new(2.5_f32, g.color)
-                        } else {
-                            egui::Stroke::new(1.5_f32, g.color)
-                        };
-                        plot_ui.polygon(Polygon::new(poly).fill_color(fill).stroke(stroke));
+                        plot_ui.polygon(Polygon::new(poly).fill_color(fill).stroke(gate_stroke(g)));
                     }
                 }
                 for line in &g.lines {
                     let pts: Vec<[f64; 2]> = line
                         .iter()
-                        .filter_map(|p| Some([cfg.x_scale.transform(p[0])?, cfg.y_scale.transform(p[1])?]))
+                        .filter_map(|p| {
+                            Some([cfg.x_scale.transform(p[0])?, cfg.y_scale.transform(p[1])?])
+                        })
                         .collect();
                     if pts.len() >= 2 {
-                        let stroke = if g.selected {
-                            egui::Stroke::new(2.5_f32, g.color)
+                        let stroke = gate_stroke(g);
+                        if g.backgate {
+                            plot_ui.line(
+                                Line::new(pts)
+                                    .color(stroke.color.gamma_multiply(0.75))
+                                    .width(stroke.width)
+                                    .style(egui_plot::LineStyle::dashed_dense()),
+                            );
                         } else {
-                            egui::Stroke::new(1.5_f32, g.color)
-                        };
-                        plot_ui.line(Line::new(pts).stroke(stroke));
+                            plot_ui.line(Line::new(pts).stroke(stroke));
+                        }
                     }
+                }
+                if let Some((text, [lx, ly])) = &g.label
+                    && let (Some(px), Some(py)) =
+                        (cfg.x_scale.transform(*lx), cfg.y_scale.transform(*ly))
+                {
+                    plot_ui.text(
+                        egui_plot::Text::new(egui_plot::PlotPoint::new(px, py), text.as_str())
+                            .color(g.color)
+                            .anchor(egui::Align2::CENTER_CENTER)
+                            .allow_hover(false),
+                    );
+                }
+                if let Some([mx, my]) = g.median
+                    && let (Some(px), Some(py)) =
+                        (cfg.x_scale.transform(mx), cfg.y_scale.transform(my))
+                {
+                    let color = g.color.gamma_multiply(0.8);
+                    let style = egui_plot::LineStyle::dashed_dense();
+                    plot_ui.line(
+                        Line::new(vec![[bx0, py], [bx1, py]])
+                            .color(color)
+                            .width(1.0_f32)
+                            .style(style),
+                    );
+                    plot_ui.line(
+                        Line::new(vec![[px, by0], [px, by1]])
+                            .color(color)
+                            .width(1.0_f32)
+                            .style(style),
+                    );
                 }
             }
 
             // Manipulation handles for the selected gate.
             for (hp, id) in &cfg.handles {
-                if let (Some(px), Some(py)) = (
-                    cfg.x_scale.transform(hp[0]),
-                    cfg.y_scale.transform(hp[1]),
-                ) {
+                if let (Some(px), Some(py)) =
+                    (cfg.x_scale.transform(hp[0]), cfg.y_scale.transform(hp[1]))
+                {
                     let (color, shape) = match id {
                         HandleId::Rotate => (
                             egui::Color32::from_rgb(240, 210, 60),
@@ -1609,33 +1975,116 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
                     plot_ui.bar_chart(
                         BarChart::new(bars.clone())
                             .color(cfg.point_color)
-                            .width(hist_bin_w * 0.9),
+                            .width(hist_bin_w * 0.95),
                     );
                 }
             } else {
+                let marker_radius = if cfg.large_dots { 4.0_f32 } else { 2.0_f32 };
                 for (color, pts) in &buckets {
                     plot_ui.points(
                         Points::new(pts.clone())
                             .color(*color)
-                            .radius(2.0_f32)
+                            .radius(marker_radius)
                             .allow_hover(false),
                     );
                 }
             }
 
+            // Data overlays (V2): extra populations on the shared axes.
+            if !matches!(cfg.view, ViewMode::Histogram) {
+                for overlay in &cfg.data_overlays {
+                    let (r, g, b) =
+                        crate::plot::parse_hex_rgb(&overlay.color).unwrap_or((120, 120, 255));
+                    let color = egui::Color32::from_rgba_unmultiplied(r, g, b, 190);
+                    let mut pts: Vec<[f64; 2]> = Vec::new();
+                    for p in &overlay.points {
+                        if let (Some(px), Some(py)) =
+                            (cfg.x_scale.transform(p[0]), cfg.y_scale.transform(p[1]))
+                        {
+                            pts.push([px, py]);
+                        }
+                    }
+                    if pts.is_empty() {
+                        continue;
+                    }
+                    match overlay.kind {
+                        crate::plot::OverlayKind::Histogram => {
+                            let bins = overlay.bins.max(2);
+                            let mut counts = vec![0usize; bins];
+                            for p in &pts {
+                                let t = ((p[0] - bx0) / (bx1 - bx0)).clamp(0.0, 1.0);
+                                let bi = ((t * (bins - 1) as f64).round() as usize).min(bins - 1);
+                                counts[bi] += 1;
+                            }
+                            let max = counts.iter().copied().max().unwrap_or(0) as f64;
+                            if max > 0.0 {
+                                let mut line = Vec::new();
+                                for (bi, &c) in counts.iter().enumerate() {
+                                    let px = bx0 + (bx1 - bx0) * bi as f64 / (bins - 1) as f64;
+                                    let py = by0 + (by1 - by0) * 0.35 * (c as f64 / max);
+                                    line.push([px, py]);
+                                }
+                                plot_ui.line(Line::new(line).color(color).width(1.4_f32));
+                            }
+                        }
+                        _ => {
+                            let radius = if cfg.large_dots { 3.2_f32 } else { 1.6_f32 };
+                            plot_ui.points(
+                                Points::new(pts)
+                                    .color(color)
+                                    .radius(radius)
+                                    .allow_hover(false),
+                            );
+                        }
+                    }
+                }
+                // Overlay legend with optional frequencies (V5).
+                if cfg.show_names_frequencies && !cfg.data_overlays.is_empty() {
+                    let span_y = (by1 - by0).max(1e-9);
+                    let mut ly = by1 - span_y * 0.04;
+                    for overlay in &cfg.data_overlays {
+                        if overlay.label.is_empty() {
+                            continue;
+                        }
+                        let (r, g, b) =
+                            crate::plot::parse_hex_rgb(&overlay.color).unwrap_or((120, 120, 255));
+                        let label = if cfg.points.is_empty() {
+                            overlay.label.clone()
+                        } else {
+                            format!(
+                                "{} ({:.1}%)",
+                                overlay.label,
+                                overlay.points.len() as f64 / cfg.points.len() as f64 * 100.0
+                            )
+                        };
+                        plot_ui.text(
+                            egui_plot::Text::new(
+                                egui_plot::PlotPoint::new(bx1 - (bx1 - bx0) * 0.02, ly),
+                                label,
+                            )
+                            .color(egui::Color32::from_rgb(r, g, b))
+                            .anchor(egui::Align2::RIGHT_TOP)
+                            .allow_hover(false),
+                        );
+                        ly -= span_y * 0.05;
+                    }
+                }
+            }
+
             // Contour lines.
             for seg in &contour_paths {
-                plot_ui.line(Line::new(vec![seg[0], seg[1]]).color(contour_color).width(1.2_f32));
+                plot_ui.line(
+                    Line::new(vec![seg[0], seg[1]])
+                        .color(contour_color)
+                        .width(1.2_f32),
+                );
             }
 
             // Interaction: report pointer position and drag/click events.
             if cfg.interactive {
                 let resp = plot_ui.response();
                 if let Some(pos) = plot_ui.pointer_coordinate() {
-                    inter.pointer = Some([
-                        cfg.x_scale.inverse(pos.x),
-                        cfg.y_scale.inverse(pos.y),
-                    ]);
+                    inter.pointer = Some([cfg.x_scale.inverse(pos.x), cfg.y_scale.inverse(pos.y)]);
                 }
 
                 if resp.drag_started() {
@@ -1652,35 +2101,30 @@ fn show_plot(ui: &mut egui::Ui, id: &str, cfg: &PlotCfg, inter: &mut PlotInterac
 
     // Set the mouse cursor based on which handle (if any) is hovered.
     if cfg.interactive
-        && let Some(ptr) = inter.pointer {
-            let span = (cfg.x_range.1 - cfg.x_range.0)
-                .abs()
-                .max((cfg.y_range.1 - cfg.y_range.0).abs())
-                .max(1.0);
-            let tol = 0.03 * span;
-            if let Some((_, handle_id)) = cfg.handles.iter().find(|(hp, _)| {
-                ((hp[0] - ptr[0]).powi(2) + (hp[1] - ptr[1]).powi(2)).sqrt() <= tol
-            }) {
-                let cursor = match handle_id {
-                    HandleId::Corner(0) | HandleId::Corner(2) => {
-                        egui::CursorIcon::ResizeNwSe
-                    }
-                    HandleId::Corner(1) | HandleId::Corner(3) => {
-                        egui::CursorIcon::ResizeNeSw
-                    }
-                    HandleId::Edge(0) | HandleId::Edge(2) => {
-                        egui::CursorIcon::ResizeHorizontal
-                    }
-                    HandleId::Edge(1) | HandleId::Edge(3) => {
-                        egui::CursorIcon::ResizeVertical
-                    }
-                    HandleId::Rotate => egui::CursorIcon::Alias,
-                    HandleId::Vertex(_) | HandleId::Center => egui::CursorIcon::Grab,
-                    _ => egui::CursorIcon::Default,
-                };
-                ui.ctx().set_cursor_icon(cursor);
-            }
+        && let Some(ptr) = inter.pointer
+    {
+        let span = (cfg.x_range.1 - cfg.x_range.0)
+            .abs()
+            .max((cfg.y_range.1 - cfg.y_range.0).abs())
+            .max(1.0);
+        let tol = 0.03 * span;
+        if let Some((_, handle_id)) = cfg
+            .handles
+            .iter()
+            .find(|(hp, _)| ((hp[0] - ptr[0]).powi(2) + (hp[1] - ptr[1]).powi(2)).sqrt() <= tol)
+        {
+            let cursor = match handle_id {
+                HandleId::Corner(0) | HandleId::Corner(2) => egui::CursorIcon::ResizeNwSe,
+                HandleId::Corner(1) | HandleId::Corner(3) => egui::CursorIcon::ResizeNeSw,
+                HandleId::Edge(0) | HandleId::Edge(2) => egui::CursorIcon::ResizeHorizontal,
+                HandleId::Edge(1) | HandleId::Edge(3) => egui::CursorIcon::ResizeVertical,
+                HandleId::Rotate => egui::CursorIcon::Alias,
+                HandleId::Vertex(_) | HandleId::Center => egui::CursorIcon::Grab,
+                _ => egui::CursorIcon::Default,
+            };
+            ui.ctx().set_cursor_icon(cursor);
         }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1693,6 +2137,11 @@ struct SampleEntry {
     /// Full path to the source FCS file (used when saving a workspace).
     path: std::path::PathBuf,
     fcs: FcsFile,
+    /// Uncompensated event data; `fcs.data` is derived from this by applying
+    /// `compensation` (when present).
+    raw_data: ndarray::Array2<f32>,
+    /// Compensation matrix currently applied to `fcs.data`, if any.
+    compensation: Option<CompensationMatrix>,
     /// Whether the shared gate set is applied to this sample. Controlled from
     /// the sample list and by the per-file prompt shown when a file is loaded
     /// after gates already exist.
@@ -1832,6 +2281,7 @@ struct LayoutDrag {
 }
 
 /// Detached-window state: an independently configurable view of one population.
+#[derive(Clone)]
 struct PopoutState {
     open: bool,
     gate: Option<usize>,
@@ -1842,6 +2292,8 @@ struct PopoutState {
     y_scale: AxisScale,
     point_color: egui::Color32,
     gradient: bool,
+    /// Density colour map for pseudocolour / zebra views (V1).
+    density_map: crate::plot::DensityMap,
     contour_levels: usize,
     x_range: (f64, f64),
     y_range: (f64, f64),
@@ -1862,6 +2314,7 @@ impl Default for PopoutState {
             y_scale: AxisScale::Linear,
             point_color: egui::Color32::from_rgb(31, 119, 180),
             gradient: true,
+            density_map: crate::plot::DensityMap::Rainbow,
             contour_levels: 8,
             x_range: (0.0, 1.0),
             y_range: (0.0, 1.0),
@@ -1905,7 +2358,14 @@ struct UndoState {
     y_scale: AxisScale,
     point_color: egui::Color32,
     gradient: bool,
+    density_map: crate::plot::DensityMap,
     contour_levels: usize,
+    gate_line_width: f32,
+    show_median_cross: bool,
+    magnetic_snap: bool,
+    magnetic_strength: f32,
+    magnetic_radius_frac: f32,
+    gate_labels: GateLabelSettings,
     x_range: (f64, f64),
     y_range: (f64, f64),
     layout_panels: Vec<LayoutPanelSpec>,
@@ -1926,12 +2386,40 @@ impl UndoState {
             && self.y_scale == other.y_scale
             && self.point_color == other.point_color
             && self.gradient == other.gradient
+            && self.density_map == other.density_map
             && self.contour_levels == other.contour_levels
+            && self.gate_line_width == other.gate_line_width
+            && self.show_median_cross == other.show_median_cross
+            && self.magnetic_snap == other.magnetic_snap
+            && self.magnetic_strength == other.magnetic_strength
+            && self.magnetic_radius_frac == other.magnetic_radius_frac
+            && self.gate_labels == other.gate_labels
             && self.x_range == other.x_range
             && self.y_range == other.y_range
             && self.layout_panels == other.layout_panels
             && self.layout_columns == other.layout_columns
     }
+}
+
+/// Population navigation actions available in graph windows (V7).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PopNav {
+    Parent,
+    FirstChild,
+    NextSibling,
+}
+
+/// Cycles an axis parameter index, wrapping at both ends.
+fn cycle_param(current: Option<usize>, len: usize, delta: isize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let cur = match current {
+        Some(i) if i < len => i as isize,
+        _ if delta >= 0 => -1,
+        _ => 0,
+    };
+    Some((cur + delta).rem_euclid(len as isize) as usize)
 }
 
 /// The egui application state.
@@ -1943,6 +2431,8 @@ pub struct FlowersApp {
 
     gates: Vec<GateDef>,
     selected_gate: Option<usize>,
+    /// Serialized [`CopiedGate`] for Ctrl+C / Ctrl+V.
+    gate_clipboard: Option<String>,
     /// Cached per-gate event indices for the current sample.
     pop_indices: Vec<Vec<usize>>,
     /// Cached children lists.
@@ -1954,11 +2444,68 @@ pub struct FlowersApp {
     y_scale: AxisScale,
     point_color: egui::Color32,
     gradient: bool,
+    /// Density colour map for pseudocolour / zebra views (V1).
+    density_map: crate::plot::DensityMap,
+    /// Draw other populations of the current X/Y pair as data overlays (V2).
+    overlay_populations: bool,
+    // -- V5 graph controls --------------------------------------------------
+    /// Swap the X and Y axes for display.
+    transpose: bool,
+    /// Density smoothing fraction in `[0, 1]`.
+    plot_smoothing: f32,
+    /// Density grid resolution in cells per axis.
+    plot_resolution: usize,
+    /// Top percentage of events saturated on the density scale.
+    outlier_clip_percent: f64,
+    /// Double the event marker radius.
+    large_dots: bool,
+    /// Draw a background grid.
+    show_grid: bool,
+    /// Draw median lines across the plot.
+    show_medians: bool,
+    /// Show the plotted event count.
+    show_event_numbers: bool,
+    /// Append frequencies to overlay names.
+    show_names_frequencies: bool,
+    /// Tick-number notation.
+    tick_notation: crate::plot::TickNotation,
+    /// Show X/Y axis labels.
+    show_axis_labels: bool,
+    /// Draw tick marks.
+    show_ticks: bool,
+    /// Draw tick numbers.
+    show_numbers: bool,
+    /// Draw adjunct X/Y histograms along the plot axes (V6).
+    show_axis_histograms: bool,
     contour_levels: usize,
+    gate_line_width: f32,
+    show_median_cross: bool,
+    magnetic_snap: bool,
+    magnetic_strength: f32,
+    magnetic_radius_frac: f32,
+    /// Population/gate overlay label options.
+    gate_labels: GateLabelSettings,
+    /// Automatic axis-range rules (T5).
+    autorange_rules: Vec<AutorangeRule>,
     x_range: (f64, f64),
     y_range: (f64, f64),
     x_data_range: (f64, f64),
     y_data_range: (f64, f64),
+
+    /// Named statistic sets persisted with the analysis.
+    statistic_sets: Vec<crate::statistics::StatisticSet>,
+
+    // Statistics panel (S5).
+    /// Whether the statistics panel window is open.
+    stats_panel_open: bool,
+
+    // 3D view (V3).
+    /// Whether the 3D view window is open.
+    view3d_open: bool,
+    /// Camera + parameter mapping for the 3D view.
+    view3d_spec: crate::plot3d::Spec3D,
+    /// Number of frames written by "Export animation".
+    view3d_frames: usize,
 
     // Cached scatter points for the current sample + parameters.
     plot_points: Vec<[f64; 2]>,
@@ -1968,7 +2515,10 @@ pub struct FlowersApp {
     interact: Interact,
 
     // Detached population window.
-    popout: PopoutState,
+    /// Detached graph windows, each with its own `PlotSpec`-style state (V7).
+    popouts: Vec<PopoutState>,
+    /// Graph window that owns the keyboard navigation shortcuts.
+    active_popout: Option<usize>,
 
     // Layout editor.
     layout_panels: Vec<LayoutPanelSpec>,
@@ -1980,6 +2530,24 @@ pub struct FlowersApp {
     // Appearance / export.
     theme: Theme,
     export_scale: f32,
+
+    // Compensation editor.
+    /// Whether the compensation window is open.
+    comp_open: bool,
+    /// Matrix being edited (applied with the buttons in the window).
+    comp_draft: Option<CompensationMatrix>,
+    /// Status / validation message shown in the compensation window.
+    comp_message: String,
+    /// Whether the compensation node is shown in the population tree (C6).
+    comp_node_visible: bool,
+
+    // Custom lookup transform table (used by the "Lookup" axis scale).
+    /// The active lookup table, if any.
+    lookup_table: LookupTable,
+    /// Source label / status for the current lookup table.
+    lookup_source: Option<String>,
+    /// Validation or error message from the last lookup edit.
+    lookup_message: String,
 
     name_edit: String,
     status: String,
@@ -2015,6 +2583,7 @@ impl Default for FlowersApp {
             y_param: None,
             gates: Vec::new(),
             selected_gate: None,
+            gate_clipboard: None,
             pop_indices: Vec::new(),
             children: Vec::new(),
             view_mode: ViewMode::Dots,
@@ -2022,15 +2591,44 @@ impl Default for FlowersApp {
             y_scale: AxisScale::Linear,
             point_color: egui::Color32::from_rgb(31, 119, 180),
             gradient: true,
+            density_map: crate::plot::DensityMap::Rainbow,
+            overlay_populations: false,
+            transpose: false,
+            plot_smoothing: 0.0,
+            plot_resolution: 128,
+            outlier_clip_percent: 0.0,
+            large_dots: false,
+            show_grid: false,
+            show_medians: false,
+            show_event_numbers: false,
+            show_names_frequencies: false,
+            tick_notation: crate::plot::TickNotation::Auto,
+            show_axis_labels: true,
+            show_ticks: true,
+            show_numbers: true,
+            show_axis_histograms: false,
             contour_levels: 8,
+            gate_line_width: 1.5,
+            show_median_cross: false,
+            magnetic_snap: false,
+            magnetic_strength: 0.6,
+            magnetic_radius_frac: 0.04,
+            gate_labels: GateLabelSettings::default(),
+            autorange_rules: Vec::new(),
             x_range: (0.0, 1.0),
             y_range: (0.0, 1.0),
             x_data_range: (0.0, 1.0),
             y_data_range: (0.0, 1.0),
+            statistic_sets: Vec::new(),
+            stats_panel_open: false,
+            view3d_open: false,
+            view3d_spec: crate::plot3d::Spec3D::default(),
+            view3d_frames: 24,
             plot_points: Vec::new(),
             new_gate_type: NewGateType::Rect,
             interact: Interact::default(),
-            popout: PopoutState::default(),
+            popouts: Vec::new(),
+            active_popout: None,
             layout_panels: Vec::new(),
             layout_columns: 2,
             layout_open: false,
@@ -2038,6 +2636,13 @@ impl Default for FlowersApp {
             layout_drag: None,
             theme: Theme::Dark,
             export_scale: 2.0,
+            comp_open: false,
+            comp_draft: None,
+            comp_message: String::new(),
+            comp_node_visible: true,
+            lookup_table: LookupTable::default(),
+            lookup_source: None,
+            lookup_message: String::new(),
             name_edit: String::new(),
             status: "Ready — load an FCS file".to_string(),
             pending_apply_prompt: None,
@@ -2095,6 +2700,93 @@ fn default_param_pair(fcs: &FcsFile) -> (usize, usize) {
     (x, y)
 }
 
+/// `$PnN` names in file order.
+fn parameter_names(fcs: &FcsFile) -> Vec<String> {
+    fcs.parameters.iter().map(|p| p.name.clone()).collect()
+}
+
+/// `$PnS` descriptions in file order.
+fn parameter_descriptions(fcs: &FcsFile) -> Vec<String> {
+    fcs.parameters
+        .iter()
+        .map(|p| p.description.clone())
+        .collect()
+}
+
+/// Reads the acquisition spillover matrix from `$SPILLOVER` and turns it into
+/// an applied compensation matrix (the inverse of the stored spillover).
+fn acquisition_compensation(fcs: &FcsFile) -> Option<CompensationMatrix> {
+    fcs.keywords
+        .get("$SPILLOVER")
+        .and_then(|text| CompensationMatrix::from_spillover_keyword(text).ok())
+        .and_then(|m| m.inverted().ok())
+}
+
+/// Applies an acquisition-defined spillover matrix when the file carries one.
+/// Returns the (possibly compensated) file, the matrix that was applied, and
+/// the original uncompensated data.
+fn with_acquisition_compensation(
+    mut fcs: FcsFile,
+) -> (FcsFile, Option<CompensationMatrix>, ndarray::Array2<f32>) {
+    let raw_data = fcs.data.clone();
+    let mut compensation = acquisition_compensation(&fcs);
+    if let Some(matrix) = &compensation {
+        let names = parameter_names(&fcs);
+        let descriptions = parameter_descriptions(&fcs);
+        match matrix.apply_to(&raw_data, &names, &descriptions) {
+            Ok(data) => fcs.data = data,
+            Err(_) => compensation = None,
+        }
+    }
+    (fcs, compensation, raw_data)
+}
+
+/// Applies a stored matrix to a freshly parsed file, retaining the raw data so
+/// compensation can later be removed.
+fn with_compensation(
+    mut fcs: FcsFile,
+    matrix: Option<&CompensationMatrix>,
+) -> (FcsFile, Option<CompensationMatrix>, ndarray::Array2<f32>) {
+    let raw_data = fcs.data.clone();
+    let Some(matrix) = matrix else {
+        return (fcs, None, raw_data);
+    };
+    let names = parameter_names(&fcs);
+    let descriptions = parameter_descriptions(&fcs);
+    match matrix.apply_to(&raw_data, &names, &descriptions) {
+        Ok(data) => {
+            fcs.data = data;
+            (fcs, Some(matrix.clone()), raw_data)
+        }
+        Err(_) => (fcs, None, raw_data),
+    }
+}
+
+/// A sensible starting set of channels for the compensation editor: everything
+/// that is not a scatter / time channel, falling back to all parameters.
+fn default_compensation_channels(fcs: &FcsFile) -> Vec<String> {
+    let is_scatter_or_time = |name: &str| {
+        let n = name.trim().to_ascii_lowercase();
+        n.contains("fsc")
+            || n.contains("ssc")
+            || n.contains("forward")
+            || n.contains("side")
+            || n == "time"
+            || n.starts_with("time ")
+    };
+    let fluoro: Vec<String> = fcs
+        .parameters
+        .iter()
+        .map(|p| p.name.clone())
+        .filter(|n| !is_scatter_or_time(n))
+        .collect();
+    if fluoro.len() >= 2 {
+        fluoro
+    } else {
+        parameter_names(fcs)
+    }
+}
+
 /// Compact, precise formatting for editable axis-range fields.
 ///
 /// Flow-cytometry axes are often on the order of 10^7, where a plain decimal is
@@ -2144,6 +2836,31 @@ fn range_drag_value(value: &mut f64, span: f64) -> egui::DragValue<'_> {
         .custom_parser(|s| s.trim().parse::<f64>().ok())
 }
 
+/// Zooms an axis range about its centre. `factor < 1` zooms in (narrower
+/// range), `factor > 1` zooms out. Log axes are zoomed in log space so the
+/// steps feel even across decades.
+fn zoom_axis_range(range: &mut (f64, f64), scale: &AxisScale, factor: f64) {
+    let (a, b) = *range;
+    if !a.is_finite() || !b.is_finite() || factor <= 0.0 {
+        return;
+    }
+    let factor = factor.clamp(0.01, 100.0);
+    if !scale.is_linear()
+        && let (Some(ta), Some(tb)) = (scale.transform(a), scale.transform(b))
+    {
+        let center = (ta + tb) / 2.0;
+        let half = (tb - ta) / 2.0 * factor;
+        *range = (
+            scale.inverse(center - half.abs()),
+            scale.inverse(center + half.abs()),
+        );
+        return;
+    }
+    let center = (a + b) / 2.0;
+    let half = (b - a) / 2.0 * factor;
+    *range = (center - half.abs(), center + half.abs());
+}
+
 // -- workspace (de)serialisation helpers -----------------------------------
 
 fn view_mode_id(v: ViewMode) -> &'static str {
@@ -2151,6 +2868,8 @@ fn view_mode_id(v: ViewMode) -> &'static str {
         ViewMode::Dots => "dots",
         ViewMode::Contour => "contour",
         ViewMode::Histogram => "histogram",
+        ViewMode::Pseudocolor => "pseudocolor",
+        ViewMode::Zebra => "zebra",
     }
 }
 
@@ -2158,21 +2877,9 @@ fn view_mode_from_id(s: &str) -> ViewMode {
     match s {
         "contour" => ViewMode::Contour,
         "histogram" => ViewMode::Histogram,
+        "pseudocolor" => ViewMode::Pseudocolor,
+        "zebra" => ViewMode::Zebra,
         _ => ViewMode::Dots,
-    }
-}
-
-fn axis_scale_id(s: AxisScale) -> &'static str {
-    match s {
-        AxisScale::Linear => "linear",
-        AxisScale::Log => "log",
-    }
-}
-
-fn axis_scale_from_id(s: &str) -> AxisScale {
-    match s {
-        "log" => AxisScale::Log,
-        _ => AxisScale::Linear,
     }
 }
 
@@ -2335,14 +3042,41 @@ fn label_from_project(l: &ProjectLabel) -> LabelStyle {
 }
 
 /// Data-space range for auto-scaling that respects the axis scale.
-fn bounds_for(values: &[f64], scale: AxisScale) -> (f64, f64) {
+/// Heuristic channel kind from a parameter name prefix (FSC/SSC = scatter,
+/// fluorescence-family prefixes = fluorescence, otherwise unknown).
+fn parameter_kind(fcs: &FcsFile, idx: usize) -> String {
+    let empty = String::new();
+    let name = fcs
+        .parameters
+        .get(idx)
+        .map(|p| p.name.to_uppercase())
+        .unwrap_or_default();
+    let upper = name.to_ascii_uppercase();
+    if upper.starts_with("FSC") || upper.starts_with("SSC") {
+        "Scatter".to_string()
+    } else if upper.starts_with("FL")
+        || upper.starts_with("PE")
+        || upper.starts_with("FITC")
+        || upper.starts_with("PERCP")
+        || upper.starts_with("APC")
+        || upper.starts_with("BV")
+        || upper.starts_with("HE")
+        || upper.starts_with("LEX")
+    {
+        "Fluorescence".to_string()
+    } else {
+        empty
+    }
+}
+
+fn bounds_for(values: &[f64], scale: &AxisScale) -> (f64, f64) {
     let mut min = f64::INFINITY;
     let mut max = f64::NEG_INFINITY;
     for &v in values {
         if !v.is_finite() {
             continue;
         }
-        if scale == AxisScale::Log && v <= 0.0 {
+        if scale.positive_only() && v <= 0.0 {
             continue;
         }
         min = min.min(v);
@@ -2352,22 +3086,29 @@ fn bounds_for(values: &[f64], scale: AxisScale) -> (f64, f64) {
         return match scale {
             AxisScale::Linear => (0.0, 1.0),
             AxisScale::Log => (1.0, 1000.0),
+            _ => (-1.0, 1.0),
         };
     }
     if (max - min).abs() < f64::EPSILON {
-        let pad = if min.abs() > 1.0 { min.abs() * 0.1 } else { 1.0 };
+        let pad = if min.abs() > 1.0 {
+            min.abs() * 0.1
+        } else {
+            1.0
+        };
         return (min - pad, max + pad);
     }
-    match scale {
-        AxisScale::Linear => {
+    if scale.is_linear() {
+        let pad = (max - min) * 0.05;
+        return (min - pad, max + pad);
+    }
+    match (scale.transform(min), scale.transform(max)) {
+        (Some(t0), Some(t1)) => {
+            let pad = (t1 - t0) * 0.05;
+            (scale.inverse(t0 - pad), scale.inverse(t1 + pad))
+        }
+        _ => {
             let pad = (max - min) * 0.05;
             (min - pad, max + pad)
-        }
-        AxisScale::Log => {
-            let l0 = min.log10();
-            let l1 = max.log10();
-            let pad = (l1 - l0) * 0.05;
-            (10f64.powf(l0 - pad), 10f64.powf(l1 + pad))
         }
     }
 }
@@ -2377,9 +3118,352 @@ impl FlowersApp {
         self.current_sample.map(|i| &self.samples[i].fcs)
     }
 
+    // -- magnetic snapping --------------------------------------------------
+
+    /// Snapping settings for a view whose largest axis span is `span`.
+    fn magnetic_settings(&self, span: f64) -> crate::magnetic::SnapSettings {
+        crate::magnetic::SnapSettings {
+            enabled: self.magnetic_snap,
+            radius: (self.magnetic_radius_frac as f64 * span.abs()).max(1e-9),
+            strength: self.magnetic_strength as f64,
+            max_iterations: 24,
+        }
+    }
+
+    /// Density field over the current sample's events on one parameter pair.
+    ///
+    /// Returns `None` when no sample is loaded, the parameters are out of
+    /// range, or fewer than two finite events remain. The field covers the
+    /// data's bounding box with a small margin.
+    fn density_field_for(
+        &self,
+        x_idx: usize,
+        y_idx: usize,
+    ) -> Option<crate::magnetic::DensityField> {
+        let fcs = self.current_fcs()?;
+        let ncols = fcs.data.ncols();
+        if x_idx >= ncols || y_idx >= ncols {
+            return None;
+        }
+        let mut points = Vec::with_capacity(fcs.data.nrows());
+        let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
+        let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
+        for row in fcs.data.rows() {
+            let x = row[x_idx] as f64;
+            let y = row[y_idx] as f64;
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
+            points.push([x, y]);
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+            min_y = min_y.min(y);
+            max_y = max_y.max(y);
+        }
+        if points.len() < 2 {
+            return None;
+        }
+        let span_x = (max_x - min_x).max(1e-6);
+        let span_y = (max_y - min_y).max(1e-6);
+        let pad_x = span_x * 0.02;
+        let pad_y = span_y * 0.02;
+        Some(crate::magnetic::DensityField::from_points(
+            &points,
+            min_x - pad_x,
+            max_x + pad_x,
+            min_y - pad_y,
+            max_y + pad_y,
+            96,
+            96,
+        ))
+    }
+
+    /// Snap a single drawing point (click, vertex or corner) to nearby density.
+    fn snap_drawing_point(
+        &self,
+        point: [f64; 2],
+        x_idx: usize,
+        y_idx: usize,
+        span: f64,
+    ) -> [f64; 2] {
+        if !self.magnetic_snap {
+            return point;
+        }
+        let Some(field) = self.density_field_for(x_idx, y_idx) else {
+            return point;
+        };
+        crate::magnetic::snap_to_density(point, &field, &self.magnetic_settings(span))
+    }
+
+    /// Snap polygon vertices to nearby density.
+    fn snap_vertices(
+        &self,
+        vertices: &[[f64; 2]],
+        x_idx: usize,
+        y_idx: usize,
+        span: f64,
+    ) -> Vec<[f64; 2]> {
+        if !self.magnetic_snap {
+            return vertices.to_vec();
+        }
+        let Some(field) = self.density_field_for(x_idx, y_idx) else {
+            return vertices.to_vec();
+        };
+        crate::magnetic::snap_polygon(vertices, &field, &self.magnetic_settings(span))
+    }
+
+    /// Snap both ends of a creation drag, keeping the drag valid.
+    fn snap_drag(
+        &self,
+        start: [f64; 2],
+        end: [f64; 2],
+        x_idx: usize,
+        y_idx: usize,
+        span: f64,
+        new_type: NewGateType,
+    ) -> ([f64; 2], [f64; 2]) {
+        if !self.magnetic_snap {
+            return (start, end);
+        }
+        let Some(field) = self.density_field_for(x_idx, y_idx) else {
+            return (start, end);
+        };
+        let settings = self.magnetic_settings(span);
+        match new_type {
+            NewGateType::Rect | NewGateType::Ellipse => {
+                let (min_x, max_x, min_y, max_y) =
+                    crate::magnetic::snap_rectangle(start, end, &field, &settings);
+                // Both corners can land on the same density peak; keep the
+                // user's original drag rather than creating a degenerate gate.
+                if (max_x - min_x).abs() < f64::EPSILON || (max_y - min_y).abs() < f64::EPSILON {
+                    (start, end)
+                } else {
+                    ([min_x, min_y], [max_x, max_y])
+                }
+            }
+            NewGateType::Bilinear => (
+                crate::magnetic::snap_to_density(start, &field, &settings),
+                crate::magnetic::snap_to_density(end, &field, &settings),
+            ),
+            NewGateType::Quadrant | NewGateType::Polygon => (start, end),
+        }
+    }
+
     /// Flow_r-inspired colour tokens for the active theme.
     fn palette(&self) -> Palette {
         Palette::for_theme(self.theme)
+    }
+
+    // -- compensation -------------------------------------------------------
+
+    fn current_sample_compensated(&self) -> bool {
+        self.current_sample
+            .and_then(|i| self.samples.get(i))
+            .is_some_and(|s| s.compensation.is_some())
+    }
+
+    /// Opens the compensation editor, seeding it with the current sample's
+    /// matrix (or its acquisition spillover).
+    fn open_compensation(&mut self) {
+        let draft = self
+            .current_sample
+            .and_then(|i| self.samples.get(i))
+            .and_then(|sample| {
+                sample
+                    .compensation
+                    .clone()
+                    .or_else(|| acquisition_compensation(&sample.fcs))
+            })
+            .or_else(|| {
+                self.current_fcs().and_then(|fcs| {
+                    CompensationMatrix::identity(default_compensation_channels(fcs)).ok()
+                })
+            });
+        self.comp_draft = draft;
+        self.comp_message = if self.comp_draft.is_some() {
+            "Edit values or load a matrix CSV.".to_string()
+        } else {
+            "Load a matrix CSV or select a sample to start.".to_string()
+        };
+        self.comp_open = true;
+    }
+
+    /// Applies the draft matrix to the current sample or every sample.
+    fn apply_compensation(&mut self, all: bool) {
+        let Some(matrix) = self.comp_draft.clone() else {
+            self.comp_message = "No matrix to apply.".to_string();
+            return;
+        };
+        let targets: Vec<usize> = if all {
+            (0..self.samples.len()).collect()
+        } else {
+            self.current_sample.into_iter().collect()
+        };
+        if targets.is_empty() {
+            self.comp_message = "Load a sample first.".to_string();
+            return;
+        }
+
+        let mut applied = 0usize;
+        let mut last_error = String::new();
+        for i in targets {
+            let (names, descriptions) = match self.samples.get(i) {
+                Some(s) => (parameter_names(&s.fcs), parameter_descriptions(&s.fcs)),
+                None => continue,
+            };
+            let sample = &mut self.samples[i];
+            match matrix.apply_to(&sample.raw_data, &names, &descriptions) {
+                Ok(data) => {
+                    sample.fcs.data = data;
+                    sample.compensation = Some(matrix.clone());
+                    applied += 1;
+                }
+                Err(e) => last_error = format!("{}: {e}", sample.id),
+            }
+        }
+
+        if applied > 0 {
+            self.dirty = true;
+            self.update_plot_points();
+            let matched = self
+                .current_fcs()
+                .map(|fcs| {
+                    matrix.matched_count(&parameter_names(fcs), &parameter_descriptions(fcs))
+                })
+                .unwrap_or(0);
+            self.comp_message =
+                format!("Applied to {applied} sample(s); {matched} channel(s) matched.");
+            self.set_status(format!(
+                "Compensation applied ({matched} channels, {applied} sample(s))"
+            ));
+        } else {
+            self.comp_message = if last_error.is_empty() {
+                "No samples to compensate.".to_string()
+            } else {
+                format!("Compensation failed — {last_error}")
+            };
+        }
+    }
+
+    /// Removes compensation from the current sample or every sample, restoring
+    /// the original uncompensated data.
+    fn clear_compensation(&mut self, all: bool) {
+        let targets: Vec<usize> = if all {
+            (0..self.samples.len()).collect()
+        } else {
+            self.current_sample.into_iter().collect()
+        };
+        let mut cleared = 0usize;
+        for i in targets {
+            if let Some(sample) = self.samples.get_mut(i)
+                && sample.compensation.is_some()
+            {
+                sample.fcs.data = sample.raw_data.clone();
+                sample.compensation = None;
+                cleared += 1;
+            }
+        }
+        if cleared > 0 {
+            self.dirty = true;
+            self.update_plot_points();
+            self.comp_message = format!("Removed compensation from {cleared} sample(s).");
+            self.set_status("Compensation removed");
+        } else {
+            self.comp_message = "Those samples are not compensated.".to_string();
+        }
+    }
+
+    /// Toggles the compensation node visibility in the population tree (C6).
+    fn toggle_compensation_node(&mut self) {
+        self.comp_node_visible = !self.comp_node_visible;
+        self.comp_message = if self.comp_node_visible {
+            "Compensation node visible.".to_string()
+        } else {
+            "Compensation node hidden.".to_string()
+        };
+    }
+
+    /// Status line for the compensation node (C6).
+    fn compensation_node_status(&self) -> String {
+        if !self.comp_node_visible {
+            return "Compensation node hidden.".to_string();
+        }
+        let applied = self
+            .current_sample
+            .and_then(|i| self.samples.get(i))
+            .map(|s| s.compensation.is_some())
+            .unwrap_or(false);
+        if applied {
+            "Compensation node active.".to_string()
+        } else {
+            "Compensation node idle (no matrix applied).".to_string()
+        }
+    }
+
+    /// Loads the current sample's `$SPILLOVER` into the editor.
+    fn load_acquisition_matrix(&mut self) {
+        match self.current_fcs().and_then(acquisition_compensation) {
+            Some(matrix) => {
+                self.comp_draft = Some(matrix);
+                self.comp_message =
+                    "Loaded the acquisition spillover matrix from $SPILLOVER.".to_string();
+            }
+            None => {
+                self.comp_message = "This sample has no usable $SPILLOVER keyword.".to_string();
+            }
+        }
+    }
+
+    /// Adds every sample channel that is missing from the draft matrix, with
+    /// identity coefficients, so a partial matrix can cover the whole file.
+    fn comp_add_missing_channels(&mut self) {
+        let Some(fcs) = self.current_fcs() else {
+            return;
+        };
+        let names = parameter_names(fcs);
+        let Some(matrix) = self.comp_draft.as_mut() else {
+            return;
+        };
+        for name in names {
+            if matrix
+                .channels
+                .iter()
+                .any(|c| c.trim().eq_ignore_ascii_case(name.trim()))
+            {
+                continue;
+            }
+            let old_n = matrix.channels.len();
+            for row in &mut matrix.values {
+                row.push(0.0);
+            }
+            let mut row = vec![0.0f32; old_n + 1];
+            row[old_n] = 1.0;
+            matrix.values.push(row);
+            matrix.channels.push(name);
+        }
+        self.comp_message = format!(
+            "Matrix now covers {} channel(s).",
+            self.comp_draft
+                .as_ref()
+                .map(|m| m.channels.len())
+                .unwrap_or(0)
+        );
+    }
+
+    /// Starts the editor with a fresh identity matrix over the sample channels.
+    fn comp_identity(&mut self) {
+        let Some(fcs) = self.current_fcs() else {
+            self.comp_message = "Load a sample first.".to_string();
+            return;
+        };
+        let channels = default_compensation_channels(fcs);
+        match CompensationMatrix::identity(channels) {
+            Ok(matrix) => {
+                self.comp_draft = Some(matrix);
+                self.comp_message = "Started a new identity matrix.".to_string();
+            }
+            Err(e) => self.comp_message = format!("Could not create matrix: {e}"),
+        }
     }
 
     fn load_file(&mut self, path: &std::path::Path) {
@@ -2395,10 +3479,14 @@ impl FlowersApp {
                     let events = fcs.event_count;
                     let had_gates = !self.gates.is_empty();
                     let (dx, dy) = default_param_pair(&fcs);
+                    let (fcs, compensation, raw_data) = with_acquisition_compensation(fcs);
+                    let auto_compensated = compensation.is_some();
                     self.samples.push(SampleEntry {
                         id: id.clone(),
                         path: path.to_path_buf(),
                         fcs,
+                        raw_data,
+                        compensation,
                         apply_gates: !had_gates,
                     });
                     let idx = self.samples.len() - 1;
@@ -2413,13 +3501,183 @@ impl FlowersApp {
                     }
                     self.update_plot_points();
                     self.set_status(format!(
-                        "Loaded {id}: {events} events × {params} parameters"
+                        "Loaded {id}: {events} events × {params} parameters{}",
+                        if auto_compensated {
+                            " (auto-compensated from $SPILLOVER)"
+                        } else {
+                            ""
+                        }
                     ));
                 }
                 Err(e) => self.set_status(format!("Error parsing FCS: {e}")),
             },
             Err(e) => self.set_status(format!("Error reading file: {e}")),
         }
+    }
+
+    // -- 3D view (V3) -------------------------------------------------------
+
+    /// Open the 3D view and map X/Y/Z to sensible parameters.
+    fn open_view3d(&mut self) {
+        self.view3d_open = true;
+        if let Some(fcs) = self.current_fcs() {
+            let n = fcs.parameters.len();
+            if n == 0 {
+                return;
+            }
+            let x = self.x_param.unwrap_or(0).min(n - 1);
+            let y = self.y_param.unwrap_or(1).min(n - 1);
+            self.view3d_spec.x = x;
+            self.view3d_spec.y = y;
+            if self.view3d_spec.z >= n || self.view3d_spec.z == x || self.view3d_spec.z == y {
+                self.view3d_spec.z = (0..n).find(|&i| i != x && i != y).unwrap_or(0);
+            }
+        }
+    }
+
+    /// Render the current 3D view to SVG.
+    fn view3d_svg(&self) -> Result<(String, u32, u32), String> {
+        let Some(fcs) = self.current_fcs() else {
+            return Err("No sample loaded for the 3D view".to_string());
+        };
+        let (w, h) = (640u32, 480u32);
+        let svg = crate::plot3d::render_3d(&fcs.data, &self.view3d_spec, w, h, "#ffffff");
+        Ok((svg, w, h))
+    }
+
+    /// Export the current 3D view as SVG.
+    fn export_view3d_svg(&mut self) {
+        match self.view3d_svg() {
+            Ok((svg, _, _)) => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("SVG", &["svg"])
+                    .set_file_name("view3d.svg")
+                    .save_file()
+                {
+                    match std::fs::write(&path, svg) {
+                        Ok(()) => {
+                            self.set_status(format!("Exported 3D view to {}", path.display()))
+                        }
+                        Err(e) => self.set_status(format!("3D export failed: {e}")),
+                    }
+                }
+            }
+            Err(e) => self.set_status(e),
+        }
+    }
+
+    /// Export a rotation animation as a numbered SVG frame sequence.
+    fn export_view3d_animation(&mut self) {
+        let Some(fcs) = self.current_fcs() else {
+            self.set_status("No sample loaded for the 3D view");
+            return;
+        };
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let (w, h) = (640u32, 480u32);
+        let frames = crate::plot3d::rotation_frames_svg(
+            &fcs.data,
+            &self.view3d_spec,
+            self.view3d_frames.max(2),
+            10.0,
+            w,
+            h,
+            "#ffffff",
+        );
+        let mut written = 0usize;
+        for (i, svg) in frames.iter().enumerate() {
+            let path = dir.join(format!("frame_{i:03}.svg"));
+            if std::fs::write(&path, svg).is_err() {
+                self.set_status(format!("Failed writing {}", path.display()));
+                return;
+            }
+            written += 1;
+        }
+        self.set_status(format!(
+            "Exported {written} 3D animation frames to {}",
+            dir.display()
+        ));
+    }
+
+    // -- statistics panel (S5) ---------------------------------------------
+
+    /// Open / close the statistics panel window.
+    fn open_stats_panel(&mut self) {
+        self.stats_panel_open = true;
+    }
+
+    /// Rows shown in the statistics panel for the current population.
+    fn stats_panel_profiles(&self) -> Vec<crate::statistics::PopulationProfile> {
+        let Some(selected) = self.selected_gate else {
+            return Vec::new();
+        };
+        let Some(fcs) = self.current_fcs() else {
+            return Vec::new();
+        };
+        let Some(indices) = self.pop_indices.get(selected).cloned() else {
+            return Vec::new();
+        };
+        let names = parameter_names(fcs);
+        let parent_count = self
+            .gates
+            .get(selected)
+            .and_then(|g| g.parent)
+            .and_then(|p| self.pop_indices.get(p).map(|v| v.len()));
+        let total_count = fcs.event_count;
+        vec![crate::statistics::compute_profile(
+            "panel",
+            &fcs.data,
+            &indices,
+            &names,
+            parent_count,
+            Some(total_count),
+        )]
+    }
+
+    fn stats_panel_rows(&self) -> Vec<crate::statistics::PopulationStat> {
+        self.stats_panel_profiles()
+            .into_iter()
+            .flat_map(|p| p.stats)
+            .collect()
+    }
+
+    /// Add a copy of a statistic set to the panel.
+    fn stats_panel_add_set(&mut self, index: usize) {
+        if let Some(set) = self.statistic_sets.get(index) {
+            self.statistic_sets.push(set.clone());
+        }
+    }
+
+    /// Remove the statistic set at `index` from the panel.
+    fn stats_panel_remove_set(&mut self, index: usize) {
+        if index < self.statistic_sets.len() {
+            self.statistic_sets.remove(index);
+        }
+    }
+
+    /// Copy a statistic set (deep clone) for editing in the panel.
+    fn stats_panel_copy_set(&mut self, index: usize) {
+        if let Some(set) = self.statistic_sets.get(index).cloned() {
+            self.statistic_sets.push(set);
+        }
+    }
+
+    /// Export the current statistic sets to a JSON file.
+    fn stats_panel_export(&mut self) -> Result<(), String> {
+        let sets = std::mem::take(&mut self.statistic_sets);
+        let json = serde_json::to_string_pretty(&sets).map_err(|e| e.to_string())?;
+        let path = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .set_file_name("statistic_sets.json")
+            .save_file();
+        let Some(path) = path else {
+            self.statistic_sets = sets;
+            return Ok(());
+        };
+        std::fs::write(&path, json).map_err(|e| e.to_string())?;
+        self.statistic_sets = sets;
+        Ok(())
     }
 
     fn set_status(&mut self, msg: impl Into<String>) {
@@ -2436,11 +3694,18 @@ impl FlowersApp {
             x_param: self.x_param,
             y_param: self.y_param,
             view_mode: self.view_mode,
-            x_scale: self.x_scale,
-            y_scale: self.y_scale,
+            x_scale: self.x_scale.clone(),
+            y_scale: self.y_scale.clone(),
             point_color: self.point_color,
             gradient: self.gradient,
+            density_map: self.density_map,
             contour_levels: self.contour_levels,
+            gate_line_width: self.gate_line_width,
+            show_median_cross: self.show_median_cross,
+            magnetic_snap: self.magnetic_snap,
+            magnetic_strength: self.magnetic_strength,
+            magnetic_radius_frac: self.magnetic_radius_frac,
+            gate_labels: self.gate_labels.clone(),
             x_range: self.x_range,
             y_range: self.y_range,
             layout_panels: self.layout_panels.clone(),
@@ -2465,11 +3730,21 @@ impl FlowersApp {
         self.view_mode = state.view_mode;
         self.point_color = state.point_color;
         self.gradient = state.gradient;
+        self.density_map = state.density_map;
         self.contour_levels = state.contour_levels;
+        self.gate_line_width = state.gate_line_width;
+        self.show_median_cross = state.show_median_cross;
+        self.magnetic_snap = state.magnetic_snap;
+        self.magnetic_strength = state.magnetic_strength;
+        self.magnetic_radius_frac = state.magnetic_radius_frac;
+        self.gate_labels = state.gate_labels;
         self.layout_panels = state.layout_panels;
         self.layout_columns = state.layout_columns;
         self.layout_selected = state.layout_selected;
-        if self.layout_selected.is_some_and(|s| s >= self.layout_panels.len()) {
+        if self
+            .layout_selected
+            .is_some_and(|s| s >= self.layout_panels.len())
+        {
             self.layout_selected = None;
         }
     }
@@ -2555,18 +3830,45 @@ impl FlowersApp {
         self.pop_indices.clear();
         self.children.clear();
         self.pending_apply_prompt = None;
-        self.popout = PopoutState::default();
+        self.popouts.clear();
+        self.active_popout = None;
         self.view_mode = ViewMode::Dots;
         self.x_scale = AxisScale::Linear;
         self.y_scale = AxisScale::Linear;
         self.gradient = true;
+        self.density_map = crate::plot::DensityMap::Rainbow;
+        self.overlay_populations = false;
+        self.transpose = false;
+        self.plot_smoothing = 0.0;
+        self.plot_resolution = 128;
+        self.outlier_clip_percent = 0.0;
+        self.large_dots = false;
+        self.show_grid = false;
+        self.show_medians = false;
+        self.show_event_numbers = false;
+        self.show_names_frequencies = false;
+        self.tick_notation = crate::plot::TickNotation::Auto;
+        self.show_axis_labels = true;
+        self.show_ticks = true;
+        self.show_numbers = true;
+        self.show_axis_histograms = false;
         self.contour_levels = 8;
+        self.gate_line_width = 1.5;
+        self.show_median_cross = false;
+        self.magnetic_snap = false;
+        self.magnetic_strength = 0.6;
+        self.magnetic_radius_frac = 0.04;
+        self.gate_labels = GateLabelSettings::default();
+        self.autorange_rules = Vec::new();
         self.point_color = egui::Color32::from_rgb(31, 119, 180);
         self.x_range = (0.0, 1.0);
         self.y_range = (0.0, 1.0);
         self.layout_columns = 2;
         self.history.clear();
         self.history_idx = 0;
+        self.comp_open = false;
+        self.comp_draft = None;
+        self.comp_message.clear();
         self.record_history(false);
         self.set_status("New workspace");
     }
@@ -2579,6 +3881,8 @@ impl FlowersApp {
             .map(|s| ProjectSample {
                 path: s.path.to_string_lossy().to_string(),
                 apply_gates: s.apply_gates,
+                compensation: s.compensation.clone(),
+                transforms: Vec::new(),
             })
             .collect();
         let gates = self
@@ -2620,17 +3924,46 @@ impl FlowersApp {
             selected_gate: self.selected_gate,
             view: ViewSettings {
                 mode: view_mode_id(self.view_mode).to_string(),
-                x_scale: axis_scale_id(self.x_scale).to_string(),
-                y_scale: axis_scale_id(self.y_scale).to_string(),
-                point_color: [self.point_color.r(), self.point_color.g(), self.point_color.b()],
+                x_scale: self.x_scale.key().to_string(),
+                y_scale: self.y_scale.key().to_string(),
+                point_color: [
+                    self.point_color.r(),
+                    self.point_color.g(),
+                    self.point_color.b(),
+                ],
                 gradient: self.gradient,
+                overlay_populations: self.overlay_populations,
+                density_map: self.density_map.id().to_string(),
+                transpose: self.transpose,
+                plot_smoothing: self.plot_smoothing,
+                plot_resolution: self.plot_resolution,
+                outlier_clip_percent: self.outlier_clip_percent,
+                large_dots: self.large_dots,
+                show_grid: self.show_grid,
+                show_medians: self.show_medians,
+                show_event_numbers: self.show_event_numbers,
+                show_names_frequencies: self.show_names_frequencies,
+                tick_notation: self.tick_notation.id().to_string(),
+                show_axis_labels: self.show_axis_labels,
+                show_ticks: self.show_ticks,
+                show_numbers: self.show_numbers,
+                show_axis_histograms: self.show_axis_histograms,
                 contour_levels: self.contour_levels,
                 x_range: self.x_range,
                 y_range: self.y_range,
+                gate_line_width: self.gate_line_width,
+                show_median_cross: self.show_median_cross,
+                magnetic_snap: self.magnetic_snap,
+                magnetic_strength: self.magnetic_strength,
+                magnetic_radius_frac: self.magnetic_radius_frac,
+                gate_labels: self.gate_labels.clone(),
+                autorange_rules: self.autorange_rules.clone(),
             },
             gates,
             layout,
             layout_columns: self.layout_columns,
+            statistic_sets: self.statistic_sets.clone(),
+            derived: Vec::new(),
         }
     }
 
@@ -2677,17 +4010,44 @@ impl FlowersApp {
         self.layout_selected = None;
         self.current_sample = None;
         self.pending_apply_prompt = None;
-        self.popout = PopoutState::default();
+        self.popouts.clear();
+        self.active_popout = None;
 
         // View settings (axis ranges are restored after the samples load, since
         // `update_plot_points` auto-fits them).
         self.view_mode = view_mode_from_id(&project.view.mode);
-        self.x_scale = axis_scale_from_id(&project.view.x_scale);
-        self.y_scale = axis_scale_from_id(&project.view.y_scale);
+        self.x_scale = AxisScale::from_key(&project.view.x_scale);
+        self.y_scale = AxisScale::from_key(&project.view.y_scale);
+        self.statistic_sets = project.statistic_sets.clone();
         let [r, g, b] = project.view.point_color;
         self.point_color = egui::Color32::from_rgb(r, g, b);
         self.gradient = project.view.gradient;
+        self.overlay_populations = project.view.overlay_populations;
+        self.density_map = crate::plot::DensityMap::from_id(&project.view.density_map)
+            .unwrap_or(crate::plot::DensityMap::Rainbow);
+        self.transpose = project.view.transpose;
+        self.plot_smoothing = project.view.plot_smoothing.clamp(0.0, 1.0);
+        self.plot_resolution = project.view.plot_resolution.clamp(16, 512);
+        self.outlier_clip_percent = project.view.outlier_clip_percent.clamp(0.0, 50.0);
+        self.large_dots = project.view.large_dots;
+        self.show_grid = project.view.show_grid;
+        self.show_medians = project.view.show_medians;
+        self.show_event_numbers = project.view.show_event_numbers;
+        self.show_names_frequencies = project.view.show_names_frequencies;
+        self.tick_notation = crate::plot::TickNotation::from_id(&project.view.tick_notation)
+            .unwrap_or(crate::plot::TickNotation::Auto);
+        self.show_axis_labels = project.view.show_axis_labels;
+        self.show_ticks = project.view.show_ticks;
+        self.show_numbers = project.view.show_numbers;
+        self.show_axis_histograms = project.view.show_axis_histograms;
         self.contour_levels = project.view.contour_levels;
+        self.gate_line_width = project.view.gate_line_width.max(0.1);
+        self.show_median_cross = project.view.show_median_cross;
+        self.magnetic_snap = project.view.magnetic_snap;
+        self.magnetic_strength = project.view.magnetic_strength.clamp(0.0, 1.0);
+        self.magnetic_radius_frac = project.view.magnetic_radius_frac.clamp(0.001, 0.5);
+        self.gate_labels = project.view.gate_labels.clone();
+        self.autorange_rules = project.view.autorange_rules.clone();
 
         // Load the referenced FCS files.
         let mut missing: Vec<String> = Vec::new();
@@ -2701,10 +4061,14 @@ impl FlowersApp {
                             .and_then(|n| n.to_str())
                             .unwrap_or("unknown")
                             .to_string();
+                        let (fcs, compensation, raw_data) =
+                            with_compensation(fcs, s.compensation.as_ref());
                         self.samples.push(SampleEntry {
                             id,
                             path: p.to_path_buf(),
                             fcs,
+                            raw_data,
+                            compensation,
                             apply_gates: s.apply_gates,
                         });
                     }
@@ -2824,8 +4188,8 @@ impl FlowersApp {
         let ys: Vec<f64> = fcs.data.column(y).iter().map(|v| *v as f64).collect();
         self.plot_points = xs.iter().zip(ys.iter()).map(|(&a, &b)| [a, b]).collect();
 
-        self.x_data_range = bounds_for(&xs, self.x_scale);
-        self.y_data_range = bounds_for(&ys, self.y_scale);
+        self.x_data_range = bounds_for(&xs, &self.x_scale);
+        self.y_data_range = bounds_for(&ys, &self.y_scale);
         self.x_range = self.x_data_range;
         self.y_range = self.y_data_range;
         self.recompute_populations();
@@ -2847,21 +4211,129 @@ impl FlowersApp {
         self.children = children_map(&self.gates);
     }
 
-    /// Auto-adjust an axis to fit the current points.
+    // -- custom lookup transform (T3) --------------------------------------
+
+    /// Open the native file dialog and load a lookup table (CSV) into the app.
+    ///
+    /// Returns the number of calibration points loaded, or a message when the
+    /// file was rejected.
+    fn open_lookup_loader(&mut self) -> Result<usize, String> {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV", &["csv"])
+            .pick_file()
+        {
+            return self.load_lookup(&path);
+        }
+        Ok(0)
+    }
+
+    /// Load and validate a lookup table from a CSV file, then attach it to the
+    /// currently selected axis scale (X, Y, or both, depending on the caller).
+    fn load_lookup(&mut self, path: &std::path::Path) -> Result<usize, String> {
+        let source = path.display().to_string();
+        let table = LookupTable::load(path).map_err(|e| format!("{e}"))?;
+        let point_count = table.x().len();
+        self.lookup_table = table;
+        self.lookup_source = Some(source.clone());
+        self.lookup_message = String::new();
+        Ok(point_count)
+    }
+
+    /// Persist the active lookup table to a CSV file.
+    fn save_lookup(&mut self, path: &std::path::Path) -> Result<(), String> {
+        self.lookup_table.save(path).map_err(|e| format!("{e}"))
+    }
+
+    /// Apply the active lookup table to the X and Y axes and refit ranges.
+    ///
+    /// Returns false when the table has fewer than two calibration points.
+    fn apply_lookup_to_both(&mut self) -> bool {
+        if self.lookup_table.x().len() < 2 {
+            self.lookup_message = "Lookup table needs at least two calibration points".to_string();
+            return false;
+        }
+        let scale = self.lookup_table.to_scale();
+        self.x_scale = scale.clone();
+        self.y_scale = scale;
+        self.auto_x();
+        self.auto_y();
+        self.lookup_message = String::new();
+        true
+    }
+
+    /// Forget the custom lookup table and restore the linear scale.
+    fn clear_lookup(&mut self) {
+        self.lookup_table = LookupTable::default();
+        self.lookup_source = None;
+        self.lookup_message = String::new();
+        self.x_scale = AxisScale::Linear;
+        self.y_scale = AxisScale::Linear;
+        self.auto_x();
+        self.auto_y();
+    }
+
+    /// Auto-adjust an axis to fit the current points, consulting automatic
+    /// autorange rules (T5) before falling back to the data-driven bounds.
     fn auto_x(&mut self) {
-        self.x_data_range = bounds_for(
-            &self.plot_points.iter().map(|p| p[0]).collect::<Vec<_>>(),
-            self.x_scale,
-        );
+        let values: Vec<f64> = self.plot_points.iter().map(|p| p[0]).collect();
+        let bounds = self
+            .autorange_bounds(&values, self.x_param.unwrap_or(0))
+            .unwrap_or_else(|| bounds_for(&values, &self.x_scale));
+        self.x_data_range = bounds;
         self.x_range = self.x_data_range;
     }
 
     fn auto_y(&mut self) {
-        self.y_data_range = bounds_for(
-            &self.plot_points.iter().map(|p| p[1]).collect::<Vec<_>>(),
-            self.y_scale,
-        );
+        let values: Vec<f64> = self.plot_points.iter().map(|p| p[1]).collect();
+        let bounds = self
+            .autorange_bounds(&values, self.y_param.unwrap_or(0))
+            .unwrap_or_else(|| bounds_for(&values, &self.y_scale));
+        self.y_data_range = bounds;
         self.y_range = self.y_data_range;
+    }
+
+    // -- automatic autorange rules (T5) --------------------------------------
+
+    /// Resolve an automatic (min, max) axis window from the enabled autorange
+    /// rules for the parameter at `param_idx`, or `None` when no rule produces
+    /// a window.
+    fn autorange_bounds(&self, values: &[f64], param_idx: usize) -> Option<(f64, f64)> {
+        let fcs = self.current_fcs()?;
+        let names = parameter_names(fcs);
+        let name = names.get(param_idx)?;
+        let kind = parameter_kind(fcs, param_idx);
+        let keywords = fcs.keywords.clone();
+        let mut candidates: Vec<&AutorangeRule> =
+            self.autorange_rules.iter().filter(|r| r.enabled).collect();
+        candidates.sort_by_key(|a| std::cmp::Reverse(a.priority));
+        for rule in candidates {
+            if !rule.applies(name, &kind, &keywords) {
+                continue;
+            }
+            if let Some(bounds) = rule.resolve(values) {
+                return Some(bounds);
+            }
+        }
+        None
+    }
+
+    /// Add a default automatic autorange rule (FSC, linear bounds).
+    fn add_autorange_rule(&mut self) {
+        let n = self.autorange_rules.len();
+        self.autorange_rules.push(AutorangeRule {
+            id: format!("autorange-{}", n),
+            name: format!("FSC autorange {}", n),
+            matcher: crate::transform::AutorangeMatcher::Name("FSC*".to_string()),
+            limit: crate::transform::AutorangeLimit::MinMax { min: 0.0, max: 1.0 },
+            ..Default::default()
+        });
+    }
+
+    /// Remove an automatic autorange rule by index.
+    fn remove_autorange_rule(&mut self, index: usize) {
+        if index < self.autorange_rules.len() {
+            self.autorange_rules.remove(index);
+        }
     }
 
     // -- gate creation ------------------------------------------------------
@@ -2889,8 +4361,112 @@ impl FlowersApp {
         self.gates.len() - 1
     }
 
+    // -- gate clipboard / duplication / synchronization --------------------
+
+    /// Serialize a gate for the internal clipboard, returning the JSON text.
+    ///
+    /// The caller may put the returned text on the system clipboard as well;
+    /// [`Self::paste_gate`] reads the app's internal copy.
+    fn copy_gate(&mut self, idx: usize) -> Option<String> {
+        let gate = self.gates.get(idx)?;
+        let copied = CopiedGate {
+            name: gate.name.clone(),
+            x_idx: gate.x_idx,
+            y_idx: gate.y_idx,
+            parent: gate.parent,
+            color: [gate.color.r(), gate.color.g(), gate.color.b()],
+            apply_to_all: gate.apply_to_all,
+            kind: gate_shape_from_kind(&gate.kind),
+        };
+        let json = serde_json::to_string(&copied).ok()?;
+        self.gate_clipboard = Some(json.clone());
+        self.set_status(format!("Copied gate '{}'", gate.name));
+        Some(json)
+    }
+
+    /// Paste the clipboard gate as a sibling of its original parent.
+    ///
+    /// The pasted gate keeps the copied name, so it can later be synchronised
+    /// with [`Self::sync_named_gates`]. When the original parent no longer
+    /// exists, the currently selected gate (or the root) is used instead.
+    /// Returns the new gate's index.
+    fn paste_gate(&mut self) -> Option<usize> {
+        let json = self.gate_clipboard.clone()?;
+        let copied: CopiedGate = serde_json::from_str(&json).ok()?;
+        let parent = match copied.parent {
+            Some(p) if p < self.gates.len() => Some(p),
+            _ => self.selected_gate.filter(|&p| p < self.gates.len()),
+        };
+        let kind = gate_kind_from_shape(&copied.kind);
+        self.gates.push(GateDef {
+            name: copied.name.clone(),
+            x_idx: copied.x_idx,
+            y_idx: copied.y_idx,
+            parent,
+            kind,
+            color: egui::Color32::from_rgb(copied.color[0], copied.color[1], copied.color[2]),
+            owner: self.current_sample,
+            apply_to_all: copied.apply_to_all,
+        });
+        let index = self.gates.len() - 1;
+        self.selected_gate = Some(index);
+        self.sync_name_edit();
+        self.recompute_populations();
+        self.set_status(format!("Pasted gate '{}'", copied.name));
+        Some(index)
+    }
+
+    /// Duplicate a gate as its sibling, preserving parent, owner and flags.
+    ///
+    /// The copy gets a unique `<name> copy` name. Returns the new index.
+    fn duplicate_gate(&mut self, idx: usize) -> Option<usize> {
+        let source = self.gates.get(idx)?.clone();
+        let mut copy = source;
+        copy.name = unique_gate_name(&self.gates, &format!("{} copy", copy.name));
+        self.gates.push(copy);
+        let index = self.gates.len() - 1;
+        self.selected_gate = Some(index);
+        self.sync_name_edit();
+        self.recompute_populations();
+        self.set_status(format!("Duplicated gate '{}'", self.gates[index].name));
+        Some(index)
+    }
+
+    /// Copy one gate's geometry onto every same-named gate on the same pair.
+    ///
+    /// This is the explicit synchronisation step for cloned populations: gates
+    /// that share a name and parameter pair are made identical. Returns the
+    /// number of gates that changed.
+    fn sync_named_gates(&mut self, source: usize) -> usize {
+        let Some(gate) = self.gates.get(source) else {
+            return 0;
+        };
+        let name = gate.name.clone();
+        let x_idx = gate.x_idx;
+        let y_idx = gate.y_idx;
+        let kind = gate.kind.clone();
+        let mut changed = 0;
+        for (i, other) in self.gates.iter_mut().enumerate() {
+            if i == source || other.name != name || other.x_idx != x_idx || other.y_idx != y_idx {
+                continue;
+            }
+            if other.kind != kind {
+                other.kind = kind.clone();
+                changed += 1;
+            }
+        }
+        if changed > 0 {
+            self.recompute_populations();
+        }
+        self.set_status(format!(
+            "Synchronised {changed} gate(s) named '{name}' ({x_idx}/{y_idx})"
+        ));
+        changed
+    }
+
     /// Create gate(s) from a drag rectangle for an explicit parameter pair.
     /// Returns the indices of the gates that were created.
+    #[allow(clippy::too_many_arguments)]
     fn create_gates(
         &mut self,
         start: [f64; 2],
@@ -2899,8 +4475,10 @@ impl FlowersApp {
         y_idx: usize,
         parent: Option<usize>,
         new_type: NewGateType,
+        span: f64,
     ) -> Vec<usize> {
         let mut created = Vec::new();
+        let (start, end) = self.snap_drag(start, end, x_idx, y_idx, span, new_type);
         let x_min = start[0].min(end[0]);
         let x_max = start[0].max(end[0]);
         let y_min = start[1].min(end[1]);
@@ -2952,7 +4530,9 @@ impl FlowersApp {
                     return created;
                 }
                 let n = self.gates.len() + 1;
-                let verts = regular_polygon(cx, cy, (x_max - x_min) / 2.0, (y_max - y_min) / 2.0, 5);
+                let verts =
+                    regular_polygon(cx, cy, (x_max - x_min) / 2.0, (y_max - y_min) / 2.0, 5);
+                let verts = self.snap_vertices(&verts, x_idx, y_idx, span);
                 created.push(self.push_gate(
                     format!("Polygon {n}"),
                     GateKind::Polygon { vertices: verts },
@@ -2962,7 +4542,8 @@ impl FlowersApp {
                 ));
             }
             NewGateType::Quadrant => {
-                created = self.create_quadrant_at([cx, cy], x_idx, y_idx, parent);
+                let split = self.snap_drawing_point([cx, cy], x_idx, y_idx, span);
+                created = self.create_quadrant_at(split, x_idx, y_idx, parent);
             }
             NewGateType::Bilinear => {
                 // Use the drag itself as the dividing line: the gate is the
@@ -2998,7 +4579,11 @@ impl FlowersApp {
         };
         let parent = self.selected_gate;
         let ty = self.new_gate_type;
-        let created = self.create_gates(start, end, x, y, parent, ty);
+        let span = (self.x_range.1 - self.x_range.0)
+            .abs()
+            .max((self.y_range.1 - self.y_range.0).abs())
+            .max(1e-9);
+        let created = self.create_gates(start, end, x, y, parent, ty, span);
         if let Some(&last) = created.last() {
             self.selected_gate = Some(last);
         }
@@ -3058,13 +4643,7 @@ impl FlowersApp {
             y2: center[1],
             below: true,
         };
-        vec![self.push_gate(
-            format!("Bilinear {base}"),
-            kind,
-            parent,
-            x_idx,
-            y_idx,
-        )]
+        vec![self.push_gate(format!("Bilinear {base}"), kind, parent, x_idx, y_idx)]
     }
 
     fn finish_gate_creation(&mut self) {
@@ -3102,8 +4681,14 @@ impl FlowersApp {
         } else {
             Some(idx.min(self.gates.len() - 1))
         };
-        self.popout.gate = None;
-        self.popout.selected_gate = None;
+        for st in &mut self.popouts {
+            st.gate = match st.gate {
+                Some(g) if g == idx => None,
+                Some(g) if g > idx => Some(g - 1),
+                other => other,
+            };
+            st.selected_gate = None;
+        }
         self.sync_name_edit();
         self.recompute_populations();
         self.set_status("Removed gate");
@@ -3194,6 +4779,99 @@ impl FlowersApp {
         }
     }
 
+    /// Convert a rectangle, ellipse or polygon gate to another of those shapes.
+    ///
+    /// Conversion goes through the parameter-independent
+    /// [`crate::gating::GateGeometry`] type: rectangles and ellipses use each
+    /// other's bounding geometry, and polygons are sampled with 64 vertices.
+    /// Quadrant and bilinear gates cannot be converted.
+    fn convert_gate(&mut self, gate: usize, target: crate::gating::GateShape) {
+        let Some(def) = self.gates.get(gate) else {
+            return;
+        };
+        let geometry = match &def.kind {
+            GateKind::Rect {
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+                angle,
+            } => crate::gating::GateGeometry::Rectangle {
+                min_x: *x_min as f32,
+                max_x: *x_max as f32,
+                min_y: *y_min as f32,
+                max_y: *y_max as f32,
+                angle: *angle as f32,
+            },
+            GateKind::Ellipse {
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+                angle,
+            } => crate::gating::GateGeometry::Ellipse {
+                center_x: ((x_min + x_max) / 2.0) as f32,
+                center_y: ((y_min + y_max) / 2.0) as f32,
+                radius_x: ((x_max - x_min).abs() / 2.0) as f32,
+                radius_y: ((y_max - y_min).abs() / 2.0) as f32,
+                angle: *angle as f32,
+            },
+            GateKind::Polygon { vertices } => crate::gating::GateGeometry::Polygon {
+                vertices: vertices
+                    .iter()
+                    .map(|v| (v[0] as f32, v[1] as f32))
+                    .collect(),
+            },
+            GateKind::Quadrant { .. } | GateKind::Bilinear { .. } => {
+                self.set_status("Only rectangle, ellipse and polygon gates can be converted");
+                return;
+            }
+        };
+        let new_kind = match geometry.convert(target) {
+            crate::gating::GateGeometry::Rectangle {
+                min_x,
+                max_x,
+                min_y,
+                max_y,
+                angle,
+            } => GateKind::Rect {
+                x_min: min_x as f64,
+                x_max: max_x as f64,
+                y_min: min_y as f64,
+                y_max: max_y as f64,
+                angle: angle as f64,
+            },
+            crate::gating::GateGeometry::Ellipse {
+                center_x,
+                center_y,
+                radius_x,
+                radius_y,
+                angle,
+            } => GateKind::Ellipse {
+                x_min: (center_x - radius_x) as f64,
+                x_max: (center_x + radius_x) as f64,
+                y_min: (center_y - radius_y) as f64,
+                y_max: (center_y + radius_y) as f64,
+                angle: angle as f64,
+            },
+            crate::gating::GateGeometry::Polygon { vertices } => GateKind::Polygon {
+                vertices: vertices
+                    .iter()
+                    .map(|&(x, y)| [x as f64, y as f64])
+                    .collect(),
+            },
+        };
+        let old = self.gates[gate].kind.clone();
+        self.gates[gate].kind = new_kind.clone();
+        self.commit_gate_edit(gate, &old, &new_kind);
+        self.recompute_populations();
+        self.set_status(format!(
+            "Converted '{}' to {}",
+            self.gates[gate].name,
+            target.label()
+        ));
+    }
+
     fn add_default_gate(&mut self) {
         let (Some(x_idx), Some(y_idx)) = (self.x_param, self.y_param) else {
             self.set_status("Select X and Y parameters first");
@@ -3206,7 +4884,8 @@ impl FlowersApp {
         let created = match self.new_gate_type {
             NewGateType::Quadrant => self.create_quadrant_at([cx, cy], x_idx, y_idx, parent),
             NewGateType::Bilinear => {
-                let r = ((self.x_range.1 - self.x_range.0).abs()
+                let r = ((self.x_range.1 - self.x_range.0)
+                    .abs()
                     .max((self.y_range.1 - self.y_range.0).abs()))
                     / 2.0;
                 self.create_bilinear_at([cx, cy], r, x_idx, y_idx, parent)
@@ -3258,17 +4937,21 @@ impl FlowersApp {
 
     /// Create a quadrant / bilinear gate at a click position.
     ///
-    /// `popout` selects which view (main plot vs. detached window) the click
-    /// came from, so the new gate gets the right parent and parameter pair.
-    fn create_click_gate(&mut self, p: [f64; 2], popout: bool) {
-        let (x_idx, y_idx, parent, ty, span) = if popout {
-            let (Some(x), Some(y)) = (self.popout.x_param, self.popout.y_param) else {
+    /// `popout` selects which graph window (the main plot or one detached
+    /// window) the click came from, so the new gate gets the right parent and
+    /// parameter pair.
+    fn create_click_gate(&mut self, p: [f64; 2], popout: Option<usize>) {
+        let (x_idx, y_idx, parent, ty, span) = if let Some(idx) = popout {
+            let Some(st) = self.popouts.get(idx) else {
                 return;
             };
-            let span = (self.popout.x_range.1 - self.popout.x_range.0)
+            let (Some(x), Some(y)) = (st.x_param, st.y_param) else {
+                return;
+            };
+            let span = (st.x_range.1 - st.x_range.0)
                 .abs()
-                .max((self.popout.y_range.1 - self.popout.y_range.0).abs());
-            (x, y, self.popout.gate, self.popout.new_gate_type, span)
+                .max((st.y_range.1 - st.y_range.0).abs());
+            (x, y, st.gate, st.new_gate_type, span)
         } else {
             let (Some(x), Some(y)) = (self.x_param, self.y_param) else {
                 return;
@@ -3278,14 +4961,17 @@ impl FlowersApp {
                 .max((self.y_range.1 - self.y_range.0).abs());
             (x, y, self.selected_gate, self.new_gate_type, span)
         };
+        let p = self.snap_drawing_point(p, x_idx, y_idx, span);
         let created = match ty {
             NewGateType::Quadrant => self.create_quadrant_at(p, x_idx, y_idx, parent),
             NewGateType::Bilinear => self.create_bilinear_at(p, span / 2.0, x_idx, y_idx, parent),
             _ => return,
         };
         if let Some(&last) = created.last() {
-            if popout {
-                self.popout.selected_gate = Some(last);
+            if let Some(idx) = popout {
+                if let Some(st) = self.popouts.get_mut(idx) {
+                    st.selected_gate = Some(last);
+                }
             } else {
                 self.selected_gate = Some(last);
             }
@@ -3293,42 +4979,168 @@ impl FlowersApp {
         self.finish_gate_creation();
     }
 
-    /// Open the detached window for a population and prime its view controls
-    /// from the main plot.
+    /// Open a detached graph window for a population and prime its view
+    /// controls from the main plot. Reuses an existing window for the same
+    /// population so the tree button behaves as "focus", not "spawn more".
     fn open_popout(&mut self, gate_idx: usize) {
         let Some(gate) = self.gates.get(gate_idx) else {
             return;
         };
         let (x, y) = (gate.x_idx, gate.y_idx);
-        self.popout.gate = Some(gate_idx);
-        self.popout.x_param = Some(x);
-        self.popout.y_param = Some(y);
-        self.popout.open = true;
-        self.popout.selected_gate = None;
-        self.popout.interact = Interact::default();
-        self.popout.view = self.view_mode;
-        self.popout.x_scale = self.x_scale;
-        self.popout.y_scale = self.y_scale;
-        self.popout.point_color = self.point_color;
-        self.popout.gradient = self.gradient;
-        self.popout.contour_levels = self.contour_levels;
-        self.popout.new_gate_type = self.new_gate_type;
-        self.popout_auto_range();
+        if let Some(i) = self.popouts.iter().position(|st| st.gate == Some(gate_idx)) {
+            let mut st = std::mem::take(&mut self.popouts[i]);
+            st.open = true;
+            st.x_param = Some(x);
+            st.y_param = Some(y);
+            st.selected_gate = None;
+            st.interact = Interact::default();
+            self.popout_auto_range(&mut st);
+            self.popouts[i] = st;
+            self.active_popout = Some(i);
+            return;
+        }
+        let mut st = PopoutState {
+            open: true,
+            gate: Some(gate_idx),
+            x_param: Some(x),
+            y_param: Some(y),
+            view: self.view_mode,
+            x_scale: self.x_scale.clone(),
+            y_scale: self.y_scale.clone(),
+            point_color: self.point_color,
+            gradient: self.gradient,
+            density_map: self.density_map,
+            contour_levels: self.contour_levels,
+            new_gate_type: self.new_gate_type,
+            ..Default::default()
+        };
+        self.popout_auto_range(&mut st);
+        self.popouts.push(st);
+        self.active_popout = Some(self.popouts.len() - 1);
     }
 
-    /// Auto-fit the detached window's ranges to its population.
-    fn popout_auto_range(&mut self) {
-        let Some(gate_idx) = self.popout.gate else {
+    /// Duplicate a graph window with an independent plot spec (V7).
+    fn duplicate_popout(&mut self, st: &PopoutState) {
+        let mut copy = st.clone();
+        copy.open = true;
+        copy.selected_gate = None;
+        copy.interact = Interact::default();
+        self.popouts.push(copy);
+        self.active_popout = Some(self.popouts.len() - 1);
+        self.set_status("Duplicated graph window");
+    }
+
+    /// Duplicate the currently focused graph window.
+    fn duplicate_active_popout(&mut self) {
+        let idx = self
+            .active_popout
+            .filter(|&i| self.popouts.get(i).is_some_and(|st| st.open))
+            .or_else(|| self.popouts.iter().position(|st| st.open));
+        if let Some(i) = idx {
+            let st = self.popouts[i].clone();
+            self.duplicate_popout(&st);
+        } else {
+            self.set_status("Open a graph window first");
+        }
+    }
+
+    /// Move to the previous/next sample in every graph window.
+    fn step_sample(&mut self, delta: isize) {
+        let n = self.samples.len();
+        if n == 0 {
+            return;
+        }
+        let cur = self.current_sample.unwrap_or(0) as isize;
+        let next = (cur + delta).rem_euclid(n as isize) as usize;
+        self.current_sample = Some(next);
+        self.update_plot_points();
+        for i in 0..self.popouts.len() {
+            let mut st = std::mem::take(&mut self.popouts[i]);
+            self.popout_auto_range(&mut st);
+            self.popouts[i] = st;
+        }
+        self.set_status(format!(
+            "Sample {}/{}: {}",
+            next + 1,
+            n,
+            self.samples[next].id
+        ));
+    }
+
+    /// Move a graph window to its parent, first child or next sibling.
+    fn navigate_popout(&mut self, st: &mut PopoutState, nav: PopNav) {
+        let Some(gate) = st.gate else {
             return;
         };
-        let (Some(x), Some(y)) = (self.popout.x_param, self.popout.y_param) else {
+        let target = match nav {
+            PopNav::Parent => self.gates.get(gate).and_then(|g| g.parent),
+            PopNav::FirstChild => self.children.get(gate).and_then(|c| c.first().copied()),
+            PopNav::NextSibling => {
+                let parent = self.gates.get(gate).and_then(|g| g.parent);
+                let siblings: Vec<usize> = self
+                    .gates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| g.parent == parent)
+                    .map(|(i, _)| i)
+                    .collect();
+                if siblings.len() <= 1 {
+                    None
+                } else {
+                    let pos = siblings.iter().position(|&i| i == gate).unwrap_or(0);
+                    Some(siblings[(pos + 1) % siblings.len()])
+                }
+            }
+        };
+        if let Some(target) = target {
+            st.gate = Some(target);
+            st.selected_gate = None;
+            self.popout_auto_range(st);
+        } else {
+            self.set_status("No such population");
+        }
+    }
+
+    /// Cycle the active graph window's X or Y parameter (V7).
+    fn cycle_plot_param(&mut self, x_axis: bool, delta: isize) {
+        let n = self.current_fcs().map(|f| f.parameters.len()).unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        let target = self
+            .active_popout
+            .filter(|&i| self.popouts.get(i).is_some_and(|st| st.open));
+        if let Some(i) = target {
+            let mut st = std::mem::take(&mut self.popouts[i]);
+            if x_axis {
+                st.x_param = cycle_param(st.x_param, n, delta);
+            } else {
+                st.y_param = cycle_param(st.y_param, n, delta);
+            }
+            self.popout_auto_range(&mut st);
+            self.popouts[i] = st;
+        } else if x_axis {
+            self.x_param = cycle_param(self.x_param, n, delta);
+            self.update_plot_points();
+        } else {
+            self.y_param = cycle_param(self.y_param, n, delta);
+            self.update_plot_points();
+        }
+    }
+
+    /// Auto-fit a graph window's ranges to its population.
+    fn popout_auto_range(&mut self, st: &mut PopoutState) {
+        let Some(gate_idx) = st.gate else {
+            return;
+        };
+        let (Some(x), Some(y)) = (st.x_param, st.y_param) else {
             return;
         };
         let pts = self.population_points_xy(gate_idx, x, y);
         let xs: Vec<f64> = pts.iter().map(|p| p[0]).collect();
         let ys: Vec<f64> = pts.iter().map(|p| p[1]).collect();
-        self.popout.x_range = bounds_for(&xs, self.popout.x_scale);
-        self.popout.y_range = bounds_for(&ys, self.popout.y_scale);
+        st.x_range = bounds_for(&xs, &st.x_scale);
+        st.y_range = bounds_for(&ys, &st.y_scale);
     }
 
     /// Points of a population for an explicit parameter pair.
@@ -3351,7 +5163,14 @@ impl FlowersApp {
     /// Controls for the detached population window. Mirrors the main window so
     /// every plotting feature (axes, scales, ranges, colour, view, gating and
     /// gate manipulation) is available there too.
-    fn popout_controls(&mut self, ui: &mut egui::Ui, p: Palette, gate_idx: usize) {
+    fn popout_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: Palette,
+        gate_idx: usize,
+        st: &mut PopoutState,
+        idx: usize,
+    ) {
         let names: Vec<String> = match self.current_fcs() {
             Some(f) => (0..f.parameters.len())
                 .map(|i| param_display_name(f, i))
@@ -3360,33 +5179,134 @@ impl FlowersApp {
         };
         let subset_len = self.pop_indices.get(gate_idx).map(|v| v.len()).unwrap_or(0);
 
+        // ----- Graph-window navigation (V7) -----
+        let has_parent = self.gates.get(gate_idx).is_some_and(|g| g.parent.is_some());
+        let has_children = self
+            .children
+            .get(gate_idx)
+            .map(|c| !c.is_empty())
+            .unwrap_or(false);
+        let sibling_count = self
+            .gates
+            .get(gate_idx)
+            .map(|g| {
+                self.gates
+                    .iter()
+                    .filter(|other| other.parent == g.parent)
+                    .count()
+            })
+            .unwrap_or(0);
         ui.horizontal(|ui| {
-            let xt = self
-                .popout
+            ui.label(egui::RichText::new("Graph:").small().color(p.muted));
+            if secondary_button(ui, p, "◀ Sample")
+                .on_hover_text("Previous sample (Alt+PageUp)")
+                .clicked()
+            {
+                self.step_sample(-1);
+            }
+            if secondary_button(ui, p, "Sample ▶")
+                .on_hover_text("Next sample (Alt+PageDown)")
+                .clicked()
+            {
+                self.step_sample(1);
+            }
+            ui.separator();
+            if ui
+                .add_enabled(
+                    has_parent,
+                    egui::Button::new(egui::RichText::new("Parent").small()),
+                )
+                .on_hover_text("Parent population (Cmd+[)")
+                .clicked()
+            {
+                self.navigate_popout(st, PopNav::Parent);
+            }
+            if ui
+                .add_enabled(
+                    has_children,
+                    egui::Button::new(egui::RichText::new("Child").small()),
+                )
+                .on_hover_text("First child population (Cmd+])")
+                .clicked()
+            {
+                self.navigate_popout(st, PopNav::FirstChild);
+            }
+            if ui
+                .add_enabled(
+                    sibling_count > 1,
+                    egui::Button::new(egui::RichText::new("Sibling").small()),
+                )
+                .on_hover_text("Next sibling population (Cmd+Shift+])")
+                .clicked()
+            {
+                self.navigate_popout(st, PopNav::NextSibling);
+            }
+            ui.separator();
+            if secondary_button(ui, p, "Duplicate window")
+                .on_hover_text("Duplicate this graph window (Cmd+Shift+D)")
+                .clicked()
+            {
+                self.duplicate_popout(st);
+            }
+        });
+
+        ui.horizontal(|ui| {
+            let xt = st
                 .x_param
                 .and_then(|i| names.get(i).cloned())
                 .unwrap_or_else(|| "Select X".to_string());
-            egui::ComboBox::new("popout_x", "X")
+            if ui
+                .small_button("◀")
+                .on_hover_text("Previous X parameter (Alt+Left)")
+                .clicked()
+            {
+                st.x_param = cycle_param(st.x_param, names.len(), -1);
+                self.popout_auto_range(st);
+            }
+            egui::ComboBox::new(("popout_x", idx), "X")
                 .selected_text(xt)
                 .show_ui(ui, |ui| {
                     for (i, name) in names.iter().enumerate() {
-                        ui.selectable_value(&mut self.popout.x_param, Some(i), name.clone());
+                        ui.selectable_value(&mut st.x_param, Some(i), name.clone());
                     }
                 });
-            let yt = self
-                .popout
+            if ui
+                .small_button("▶")
+                .on_hover_text("Next X parameter (Alt+Right)")
+                .clicked()
+            {
+                st.x_param = cycle_param(st.x_param, names.len(), 1);
+                self.popout_auto_range(st);
+            }
+            let yt = st
                 .y_param
                 .and_then(|i| names.get(i).cloned())
                 .unwrap_or_else(|| "Select Y".to_string());
-            egui::ComboBox::new("popout_y", "Y")
+            if ui
+                .small_button("◀")
+                .on_hover_text("Previous Y parameter (Alt+Down)")
+                .clicked()
+            {
+                st.y_param = cycle_param(st.y_param, names.len(), -1);
+                self.popout_auto_range(st);
+            }
+            egui::ComboBox::new(("popout_y", idx), "Y")
                 .selected_text(yt)
                 .show_ui(ui, |ui| {
                     for (i, name) in names.iter().enumerate() {
-                        ui.selectable_value(&mut self.popout.y_param, Some(i), name.clone());
+                        ui.selectable_value(&mut st.y_param, Some(i), name.clone());
                     }
                 });
+            if ui
+                .small_button("▶")
+                .on_hover_text("Next Y parameter (Alt+Up)")
+                .clicked()
+            {
+                st.y_param = cycle_param(st.y_param, names.len(), 1);
+                self.popout_auto_range(st);
+            }
             if secondary_button(ui, p, "Auto range").clicked() {
-                self.popout_auto_range();
+                self.popout_auto_range(st);
             }
             ui.label(
                 egui::RichText::new(format!("{subset_len} events"))
@@ -3397,114 +5317,140 @@ impl FlowersApp {
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("X scale:").small().color(p.muted));
-            for scale in [AxisScale::Linear, AxisScale::Log] {
+            for scale in AxisScale::all() {
                 if ui
-                    .selectable_label(self.popout.x_scale == scale, scale.label())
+                    .selectable_label(st.x_scale == scale, scale.label())
                     .clicked()
                 {
-                    self.popout.x_scale = scale;
-                    self.popout_auto_range();
+                    st.x_scale = scale;
+                    self.popout_auto_range(st);
                 }
             }
             ui.label(egui::RichText::new("range:").small().color(p.muted));
-            let span = (self.popout.x_range.1 - self.popout.x_range.0).abs().max(1.0);
-            ui.add(range_drag_value(&mut self.popout.x_range.0, span));
-            ui.add(range_drag_value(&mut self.popout.x_range.1, span));
+            let span = (st.x_range.1 - st.x_range.0).abs().max(1.0);
+            ui.add(range_drag_value(&mut st.x_range.0, span));
+            ui.add(range_drag_value(&mut st.x_range.1, span));
+            if ui.small_button("−").on_hover_text("Zoom X out").clicked() {
+                zoom_axis_range(&mut st.x_range, &st.x_scale, 1.25);
+            }
+            if ui.small_button("+").on_hover_text("Zoom X in").clicked() {
+                zoom_axis_range(&mut st.x_range, &st.x_scale, 0.8);
+            }
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Y scale:").small().color(p.muted));
-            for scale in [AxisScale::Linear, AxisScale::Log] {
+            for scale in AxisScale::all() {
                 if ui
-                    .selectable_label(self.popout.y_scale == scale, scale.label())
+                    .selectable_label(st.y_scale == scale, scale.label())
                     .clicked()
                 {
-                    self.popout.y_scale = scale;
-                    self.popout_auto_range();
+                    st.y_scale = scale;
+                    self.popout_auto_range(st);
                 }
             }
             ui.label(egui::RichText::new("range:").small().color(p.muted));
-            let span = (self.popout.y_range.1 - self.popout.y_range.0).abs().max(1.0);
-            ui.add(range_drag_value(&mut self.popout.y_range.0, span));
-            ui.add(range_drag_value(&mut self.popout.y_range.1, span));
+            let span = (st.y_range.1 - st.y_range.0).abs().max(1.0);
+            ui.add(range_drag_value(&mut st.y_range.0, span));
+            ui.add(range_drag_value(&mut st.y_range.1, span));
+            if ui.small_button("−").on_hover_text("Zoom Y out").clicked() {
+                zoom_axis_range(&mut st.y_range, &st.y_scale, 1.25);
+            }
+            if ui.small_button("+").on_hover_text("Zoom Y in").clicked() {
+                zoom_axis_range(&mut st.y_range, &st.y_scale, 0.8);
+            }
         });
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Dot colour:").small().color(p.muted));
-            ui.color_edit_button_srgba(&mut self.popout.point_color);
-            ui.checkbox(&mut self.popout.gradient, "Gradient");
+            ui.color_edit_button_srgba(&mut st.point_color);
+            ui.checkbox(&mut st.gradient, "Gradient");
             ui.label(egui::RichText::new("View:").small().color(p.muted));
-            for mode in [ViewMode::Dots, ViewMode::Contour, ViewMode::Histogram] {
-                if ui
-                    .selectable_label(self.popout.view == mode, mode.label())
-                    .clicked()
-                {
-                    self.popout.view = mode;
+            for mode in [
+                ViewMode::Dots,
+                ViewMode::Contour,
+                ViewMode::Histogram,
+                ViewMode::Pseudocolor,
+                ViewMode::Zebra,
+            ] {
+                if ui.selectable_label(st.view == mode, mode.label()).clicked() {
+                    st.view = mode;
                 }
             }
-            if matches!(self.popout.view, ViewMode::Contour) {
-                ui.add(egui::Slider::new(&mut self.popout.contour_levels, 3..=100).text("levels"));
+            if matches!(st.view, ViewMode::Contour) {
+                ui.add(egui::Slider::new(&mut st.contour_levels, 3..=100).text("levels"));
+            }
+            if matches!(st.view, ViewMode::Pseudocolor | ViewMode::Zebra) {
+                ui.label(egui::RichText::new("Map:").small().color(p.muted));
+                egui::ComboBox::new(("popout_density_map", idx), "")
+                    .selected_text(st.density_map.label())
+                    .show_ui(ui, |ui| {
+                        for map in crate::plot::DensityMap::all() {
+                            ui.selectable_value(&mut st.density_map, map, map.label());
+                        }
+                    });
             }
         });
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("New gate:").small().color(p.muted));
             for gt in NewGateType::ALL {
-                ui.radio_value(&mut self.popout.new_gate_type, gt, gt.label());
+                ui.radio_value(&mut st.new_gate_type, gt, gt.label());
             }
         });
 
         // Manipulation buttons for the gate selected inside the popout.
-        if let Some(gi) = self.popout.selected_gate
-            && gi < self.gates.len() {
-                let span = (self.popout.x_range.1 - self.popout.x_range.0)
-                    .abs()
-                    .max((self.popout.y_range.1 - self.popout.y_range.0).abs())
-                    .max(1.0);
-                let step = span * 0.02;
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Transform:").small().color(p.muted));
-                    let mut t = false;
-                    if secondary_button(ui, p, "⬅").clicked() {
-                        self.nudge_gate(gi, -step, 0.0);
-                        t = true;
-                    }
-                    if secondary_button(ui, p, "➡").clicked() {
-                        self.nudge_gate(gi, step, 0.0);
-                        t = true;
-                    }
-                    if secondary_button(ui, p, "⬆").clicked() {
-                        self.nudge_gate(gi, 0.0, step);
-                        t = true;
-                    }
-                    if secondary_button(ui, p, "⬇").clicked() {
-                        self.nudge_gate(gi, 0.0, -step);
-                        t = true;
-                    }
-                    if secondary_button_hover(ui, p, "⟲", "Rotate -5°").clicked() {
-                        let c = self.gates[gi].kind.center();
-                        self.rotate_gate(gi, c, (-5.0f64).to_radians());
-                        t = true;
-                    }
-                    if secondary_button_hover(ui, p, "⟳", "Rotate +5°").clicked() {
-                        let c = self.gates[gi].kind.center();
-                        self.rotate_gate(gi, c, (5.0f64).to_radians());
-                        t = true;
-                    }
-                    if secondary_button_hover(ui, p, "➕", "Enlarge").clicked() {
-                        let c = self.gates[gi].kind.center();
-                        self.scale_gate(gi, c, 1.1);
-                        t = true;
-                    }
-                    if secondary_button_hover(ui, p, "➖", "Shrink").clicked() {
-                        let c = self.gates[gi].kind.center();
-                        self.scale_gate(gi, c, 0.9);
-                        t = true;
-                    }
-                    if t {
-                        self.recompute_populations();
-                    }
-                });
-            }
+        if let Some(gi) = st.selected_gate
+            && gi < self.gates.len()
+        {
+            let span = (st.x_range.1 - st.x_range.0)
+                .abs()
+                .max((st.y_range.1 - st.y_range.0).abs())
+                .max(1.0);
+            let step = span * 0.02;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Transform:").small().color(p.muted));
+                let mut t = false;
+                if secondary_button(ui, p, "⬅").clicked() {
+                    self.nudge_gate(gi, -step, 0.0);
+                    t = true;
+                }
+                if secondary_button(ui, p, "➡").clicked() {
+                    self.nudge_gate(gi, step, 0.0);
+                    t = true;
+                }
+                if secondary_button(ui, p, "⬆").clicked() {
+                    self.nudge_gate(gi, 0.0, step);
+                    t = true;
+                }
+                if secondary_button(ui, p, "⬇").clicked() {
+                    self.nudge_gate(gi, 0.0, -step);
+                    t = true;
+                }
+                if secondary_button_hover(ui, p, "⟲", "Rotate -5°").clicked() {
+                    let c = self.gates[gi].kind.center();
+                    self.rotate_gate(gi, c, (-5.0f64).to_radians());
+                    t = true;
+                }
+                if secondary_button_hover(ui, p, "⟳", "Rotate +5°").clicked() {
+                    let c = self.gates[gi].kind.center();
+                    self.rotate_gate(gi, c, (5.0f64).to_radians());
+                    t = true;
+                }
+                if secondary_button_hover(ui, p, "➕", "Enlarge").clicked() {
+                    let c = self.gates[gi].kind.center();
+                    self.scale_gate(gi, c, 1.1);
+                    t = true;
+                }
+                if secondary_button_hover(ui, p, "➖", "Shrink").clicked() {
+                    let c = self.gates[gi].kind.center();
+                    self.scale_gate(gi, c, 0.9);
+                    t = true;
+                }
+                if t {
+                    self.recompute_populations();
+                }
+            });
+        }
     }
 
     // -- rendering helpers --------------------------------------------------
@@ -3518,6 +5464,10 @@ impl FlowersApp {
     }
 
     /// Gate overlays for an explicit parameter pair and axis ranges.
+    ///
+    /// When population labels are enabled each visible gate gets a label with
+    /// its name/count/percentages at the polygon centroid. Backgating marks the
+    /// ancestors of the selected gate so they can be drawn as dashed outlines.
     fn gate_visuals_for(
         &self,
         x: usize,
@@ -3526,22 +5476,254 @@ impl FlowersApp {
         y_range: (f64, f64),
         selected: Option<usize>,
     ) -> Vec<GateVisual> {
+        let parents: Vec<Option<usize>> = self.gates.iter().map(|g| g.parent).collect();
+        let backgated: std::collections::HashSet<usize> = if self.gate_labels.backgating {
+            selected
+                .map(|s| backgate_ancestors(&parents, s).into_iter().collect())
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let total_count = self.current_fcs().map(|f| f.event_count).unwrap_or(0);
         let mut out = Vec::new();
         for (i, gate) in self.gates.iter().enumerate() {
             if gate.x_idx != x || gate.y_idx != y {
                 continue;
             }
+            let median = if self.show_median_cross {
+                self.current_fcs()
+                    .and_then(|fcs| self.pop_indices.get(i).map(|idx| (fcs, idx)))
+                    .and_then(|(fcs, idx)| crate::gating::median_cross(&fcs.data, idx, x, y))
+                    .map(|(mx, my)| [mx, my])
+            } else {
+                None
+            };
+            let fill = gate.kind.polygon(x_range, y_range);
+            let label = if self.gate_labels.show {
+                let count = self.pop_indices.get(i).map(|v| v.len()).unwrap_or(0);
+                let parent_count = gate
+                    .parent
+                    .and_then(|p| self.pop_indices.get(p).map(|v| v.len()));
+                let mut ancestry: Vec<String> = backgate_ancestors(&parents, i)
+                    .into_iter()
+                    .filter_map(|idx| self.gates.get(idx).map(|g| g.name.clone()))
+                    .collect();
+                ancestry.push(gate.name.clone());
+                let info = PopulationLabel {
+                    name: gate.name.clone(),
+                    count,
+                    parent_count,
+                    total_count,
+                    ancestry,
+                };
+                let text = info.text(&self.gate_labels);
+                if text.is_empty() {
+                    None
+                } else {
+                    polygon_centroid(&fill).map(|position| (text, position))
+                }
+            } else {
+                None
+            };
             out.push(GateVisual {
-                fill: gate.kind.polygon(x_range, y_range),
+                fill,
                 lines: gate.kind.divider_lines(x_range, y_range),
                 color: gate.color,
                 selected: selected == Some(i),
+                line_width: self.gate_line_width,
+                median,
+                label,
+                backgate: backgated.contains(&i),
             });
         }
         out
     }
 
     /// Build the plot configuration for the main view.
+    /// Events in the parent population that fall outside the selected gate,
+    /// i.e. the events that would be included if the gate were omitted (V4).
+    fn backgate_residual_points(&self) -> Vec<[f64; 2]> {
+        let (Some(sel), Some(fcs), Some(x), Some(y)) = (
+            self.selected_gate,
+            self.current_fcs(),
+            self.x_param,
+            self.y_param,
+        ) else {
+            return Vec::new();
+        };
+        let Some(gate) = self.gates.get(sel) else {
+            return Vec::new();
+        };
+        if gate.x_idx != x || gate.y_idx != y {
+            return Vec::new();
+        }
+        let Some(current) = self.pop_indices.get(sel) else {
+            return Vec::new();
+        };
+        let parent: Vec<usize> = match gate.parent {
+            Some(p) => self.pop_indices.get(p).cloned().unwrap_or_default(),
+            None => (0..fcs.event_count).collect(),
+        };
+        parent
+            .iter()
+            .filter(|&&e| current.binary_search(&e).is_err())
+            .map(|&e| [fcs.data[[e, x]] as f64, fcs.data[[e, y]] as f64])
+            .collect()
+    }
+
+    /// Build data overlays for every other population gated on the current
+    /// X/Y parameter pair (V2). Returns an empty list when overlays are off.
+    fn data_overlays_for_plot(&self) -> Vec<crate::plot::DataOverlay> {
+        let mut overlays = Vec::new();
+        if self.gate_labels.backgate_events {
+            let residual = self.backgate_residual_points();
+            if !residual.is_empty() {
+                let label = self
+                    .selected_gate
+                    .and_then(|i| self.gates.get(i))
+                    .map(|g| format!("Excluded by {}", g.name))
+                    .unwrap_or_else(|| "Excluded events".to_string());
+                overlays.push(crate::plot::DataOverlay::dots(label, "#94a3b8", residual));
+            }
+        }
+        if !self.overlay_populations {
+            return overlays;
+        }
+        let (Some(fcs), Some(x), Some(y)) = (self.current_fcs(), self.x_param, self.y_param) else {
+            return overlays;
+        };
+        for (i, gate) in self.gates.iter().enumerate() {
+            if gate.x_idx != x || gate.y_idx != y || Some(i) == self.selected_gate {
+                continue;
+            }
+            let Some(indices) = self.pop_indices.get(i) else {
+                continue;
+            };
+            if indices.is_empty() {
+                continue;
+            }
+            let points = indices
+                .iter()
+                .map(|&e| [fcs.data[[e, x]] as f64, fcs.data[[e, y]] as f64])
+                .collect();
+            overlays.push(crate::plot::DataOverlay::dots(
+                gate.name.clone(),
+                color_to_hex(gate_color(i)),
+                points,
+            ));
+        }
+        overlays
+    }
+
+    /// Render a multigraph sheet for the current sample and parameters (V2).
+    fn multigraph_svg_for(
+        &self,
+        mode: crate::plot::MultigraphMode,
+        columns: usize,
+    ) -> Result<(String, u32, u32), String> {
+        let Some(fcs) = self.current_fcs() else {
+            return Err("No sample loaded to render a multigraph".to_string());
+        };
+        let (Some(x), Some(y)) = (self.x_param, self.y_param) else {
+            return Err("Select X and Y parameters to render a multigraph".to_string());
+        };
+        let labels: Vec<String> = fcs
+            .parameters
+            .iter()
+            .enumerate()
+            .map(|(i, _)| param_display_name(fcs, i))
+            .collect();
+        let panels = crate::plot::multigraph_panels(fcs.parameters.len(), x, y, mode);
+        if panels.is_empty() {
+            return Err("No multigraph panels to render".to_string());
+        }
+        let panel_w = 280u32;
+        let panel_h = 220u32;
+        let style = PlotStyle {
+            point_color: color_to_hex(self.point_color),
+            x_scale: AxisScale::Linear,
+            y_scale: AxisScale::Linear,
+            gradient: self.gradient,
+            ..Default::default()
+        };
+        let svg = crate::plot::multigraph_svg(
+            &fcs.data, &panels, columns, panel_w, panel_h, &labels, &style,
+        );
+        let columns = columns.max(1);
+        let rows = panels.len().div_ceil(columns);
+        let total_w = columns as u32 * panel_w + (columns as u32 + 1) * 8;
+        let total_h = rows as u32 * panel_h + (rows as u32 + 1) * 8;
+        Ok((svg, total_w, total_h))
+    }
+
+    /// Ask for a path and export a multigraph sheet as SVG.
+    fn export_multigraph(&mut self, mode: crate::plot::MultigraphMode, columns: usize) {
+        let (default_name, label) = match mode {
+            crate::plot::MultigraphMode::AllByX => ("multigraph_by_x.svg", "all-by-X"),
+            crate::plot::MultigraphMode::AllByY => ("multigraph_by_y.svg", "all-by-Y"),
+            crate::plot::MultigraphMode::NxN => ("multigraph_nxn.svg", "NxN"),
+        };
+        match self.multigraph_svg_for(mode, columns) {
+            Ok((svg, w, h)) => {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("SVG", &["svg"])
+                    .set_file_name(default_name)
+                    .save_file()
+                {
+                    match std::fs::write(&path, svg) {
+                        Ok(()) => self.set_status(format!(
+                            "Exported {label} multigraph ({w}x{h}) to {}",
+                            path.display()
+                        )),
+                        Err(e) => self.set_status(format!("Multigraph export failed: {e}")),
+                    }
+                }
+            }
+            Err(e) => self.set_status(e),
+        }
+    }
+
+    /// Applies axis transposition to a fully-built plot configuration (V5).
+    ///
+    /// Swapping at the presentation layer keeps gate geometry, labels and data
+    /// overlays consistent. Gate editing is disabled while transposed because
+    /// pointer coordinates no longer match the gate's native X/Y pair.
+    fn apply_transpose_to_cfg(&self, cfg: &mut PlotCfg) {
+        if !self.transpose || matches!(cfg.view, ViewMode::Histogram) {
+            return;
+        }
+        std::mem::swap(&mut cfg.x_range, &mut cfg.y_range);
+        std::mem::swap(&mut cfg.x_scale, &mut cfg.y_scale);
+        std::mem::swap(&mut cfg.x_label, &mut cfg.y_label);
+        for p in &mut cfg.points {
+            *p = [p[1], p[0]];
+        }
+        for overlay in &mut cfg.data_overlays {
+            for p in &mut overlay.points {
+                *p = [p[1], p[0]];
+            }
+        }
+        for gate in &mut cfg.gates {
+            for p in &mut gate.fill {
+                *p = [p[1], p[0]];
+            }
+            for line in &mut gate.lines {
+                for p in line {
+                    *p = [p[1], p[0]];
+                }
+            }
+            if let Some(median) = gate.median.as_mut() {
+                *median = [median[1], median[0]];
+            }
+            if let Some((_, position)) = gate.label.as_mut() {
+                *position = [position[1], position[0]];
+            }
+        }
+        cfg.handles.clear();
+        cfg.interactive = false;
+        cfg.transposed = true;
+    }
+
     fn main_plot_cfg(&self) -> PlotCfg {
         let x = self.x_param.unwrap_or(0);
         let y = self.y_param.unwrap_or(0);
@@ -3559,27 +5741,46 @@ impl FlowersApp {
             }
             _ => Vec::new(),
         };
-        PlotCfg {
+        let cfg = PlotCfg {
             points: self.plot_points.clone(),
             x_range: self.x_range,
             y_range: self.y_range,
-            x_scale: self.x_scale,
-            y_scale: self.y_scale,
+            x_scale: self.x_scale.clone(),
+            y_scale: self.y_scale.clone(),
             point_color: self.point_color,
             gradient: self.gradient,
             view: self.view_mode,
+            density_map: self.density_map,
+            data_overlays: self.data_overlays_for_plot(),
             contour_levels: self.contour_levels,
             gates: self.gate_visuals(),
             handles,
-            x_label: format!("{} ({})", x_label, scale_label(self.x_scale)),
+            x_label: format!("{} ({})", x_label, scale_label(&self.x_scale)),
             y_label: if matches!(self.view_mode, ViewMode::Histogram) {
                 "Count".to_string()
             } else {
-                format!("{} ({})", y_label, scale_label(self.y_scale))
+                format!("{} ({})", y_label, scale_label(&self.y_scale))
             },
             interactive: true,
             line_preview: matches!(self.new_gate_type, NewGateType::Bilinear),
-        }
+            smoothing: self.plot_smoothing,
+            resolution: self.plot_resolution,
+            outlier_clip_percent: self.outlier_clip_percent,
+            large_dots: self.large_dots,
+            grid: self.show_grid,
+            medians: self.show_medians,
+            show_event_numbers: self.show_event_numbers,
+            show_names_frequencies: self.show_names_frequencies,
+            notation: self.tick_notation,
+            show_axis_labels: self.show_axis_labels,
+            show_ticks: self.show_ticks,
+            show_numbers: self.show_numbers,
+            axis_histograms: self.show_axis_histograms,
+            transposed: false,
+        };
+        let mut cfg = cfg;
+        self.apply_transpose_to_cfg(&mut cfg);
+        cfg
     }
 
     /// Build the SVG for the current main plot, with gate overlays.
@@ -3592,26 +5793,53 @@ impl FlowersApp {
             return Err("Select X and Y parameters to export".to_string());
         };
 
-        let overlays: Vec<PlotOverlay> = self
-            .gate_visuals()
-            .into_iter()
+        // Build the same presentation configuration as the interactive plot so
+        // graph options (including axis transposition) apply to exports too.
+        let cfg = self.main_plot_cfg();
+        let (ex, ey) = if cfg.transposed { (y, x) } else { (x, y) };
+
+        let overlays: Vec<PlotOverlay> = cfg
+            .gates
+            .iter()
             .map(|g| PlotOverlay {
-                points: g.fill,
+                points: g.fill.clone(),
                 stroke: color_to_hex(g.color),
                 fill: None,
                 closed: true,
+                label: g.label.as_ref().map(|(text, position)| OverlayLabel {
+                    text: text.clone(),
+                    position: *position,
+                    color: color_to_hex(g.color),
+                    size: 11.0,
+                }),
+                dashed: g.backgate,
             })
             .collect();
+        let data_overlays = cfg.data_overlays.clone();
 
         let style = PlotStyle {
             point_color: color_to_hex(self.point_color),
-            x_scale: self.x_scale,
-            y_scale: self.y_scale,
+            x_scale: cfg.x_scale.clone(),
+            y_scale: cfg.y_scale.clone(),
             gradient: self.gradient,
             contour: matches!(self.view_mode, ViewMode::Contour),
             contour_levels: self.contour_levels,
             title: param_display_name(fcs, y),
             line_color: color_to_hex(egui::Color32::from_rgb(44, 160, 44)),
+            smoothing: self.plot_smoothing,
+            resolution: self.plot_resolution,
+            outlier_clip_percent: self.outlier_clip_percent,
+            large_dots: self.large_dots,
+            grid: self.show_grid,
+            medians: self.show_medians,
+            show_event_numbers: self.show_event_numbers,
+            show_names_frequencies: self.show_names_frequencies,
+            notation: self.tick_notation,
+            show_axis_labels: self.show_axis_labels,
+            show_ticks: self.show_ticks,
+            show_numbers: self.show_numbers,
+            axis_histograms: self.show_axis_histograms,
+            show_scale_labels: false,
             ..Default::default()
         };
 
@@ -3619,25 +5847,29 @@ impl FlowersApp {
             crate::plot::histogram_svg(
                 &fcs.data,
                 x,
-                &param_display_name(fcs, x),
+                &cfg.x_label,
                 "Count",
                 &[],
-                Some((self.x_range.0 as f32, self.x_range.1 as f32)),
-                50,
+                Some((cfg.x_range.0 as f32, cfg.x_range.1 as f32)),
+                400,
                 &style,
             )
         } else {
-            dot_plot_svg(
+            let density = matches!(self.view_mode, ViewMode::Pseudocolor | ViewMode::Zebra)
+                .then_some((&self.density_map, 8usize));
+            crate::plot::dot_plot_svg_multi(
                 &fcs.data,
-                x,
-                y,
-                &param_display_name(fcs, x),
-                &param_display_name(fcs, y),
+                ex,
+                ey,
+                &cfg.x_label,
+                &cfg.y_label,
                 &[],
-                Some((self.x_range.0 as f32, self.x_range.1 as f32)),
-                Some((self.y_range.0 as f32, self.y_range.1 as f32)),
+                Some((cfg.x_range.0 as f32, cfg.x_range.1 as f32)),
+                Some((cfg.y_range.0 as f32, cfg.y_range.1 as f32)),
                 &overlays,
+                &data_overlays,
                 &style,
+                density,
             )
         };
         Ok((svg, style.width, style.height))
@@ -3695,9 +5927,7 @@ impl FlowersApp {
                     parent: gate.parent.map(|p| self.gates[p].name.clone()),
                     count: pops[i].len(),
                     total: sample.fcs.event_count,
-                    parent_count: gate
-                        .parent
-                        .and_then(|p| pops.get(p).map(|v| v.len())),
+                    parent_count: gate.parent.and_then(|p| pops.get(p).map(|v| v.len())),
                     gate_summary: Some(gate.kind.summary()),
                 });
             }
@@ -3770,6 +6000,19 @@ impl FlowersApp {
                     y_label_rotation: spec.y_label.rotation_deg,
                     x_label_font: spec.x_label.font.css().to_string(),
                     y_label_font: spec.y_label.font.css().to_string(),
+                    smoothing: self.plot_smoothing,
+                    resolution: self.plot_resolution,
+                    outlier_clip_percent: self.outlier_clip_percent,
+                    large_dots: self.large_dots,
+                    grid: self.show_grid,
+                    medians: self.show_medians,
+                    show_event_numbers: self.show_event_numbers,
+                    show_names_frequencies: self.show_names_frequencies,
+                    notation: self.tick_notation,
+                    show_axis_labels: self.show_axis_labels,
+                    show_ticks: self.show_ticks,
+                    show_numbers: self.show_numbers,
+                    axis_histograms: self.show_axis_histograms,
                     ..Default::default()
                 };
                 let svg = if matches!(spec.view, ViewMode::Histogram) {
@@ -3780,7 +6023,7 @@ impl FlowersApp {
                         &y_text,
                         &[],
                         None,
-                        50,
+                        400,
                         &style,
                     )
                 } else {
@@ -3798,18 +6041,35 @@ impl FlowersApp {
                             .unwrap_or_default()
                         })
                         .unwrap_or_default();
-                    dot_plot_svg(
-                        &fcs.data,
-                        spec.x,
-                        spec.y,
-                        &x_text,
-                        &y_text,
-                        &indices,
-                        None,
-                        None,
-                        &[],
-                        &style,
-                    )
+                    if matches!(spec.view, ViewMode::Pseudocolor | ViewMode::Zebra) {
+                        crate::plot::dot_plot_svg_density(
+                            &fcs.data,
+                            spec.x,
+                            spec.y,
+                            &x_text,
+                            &y_text,
+                            &indices,
+                            None,
+                            None,
+                            &[],
+                            &style,
+                            &self.density_map,
+                            8,
+                        )
+                    } else {
+                        dot_plot_svg(
+                            &fcs.data,
+                            spec.x,
+                            spec.y,
+                            &x_text,
+                            &y_text,
+                            &indices,
+                            None,
+                            None,
+                            &[],
+                            &style,
+                        )
+                    }
                 };
                 Some(LayoutPlacement {
                     title: spec.title.clone(),
@@ -3832,10 +6092,7 @@ impl FlowersApp {
     fn export_layout(&mut self, path: &std::path::Path) {
         let (svg, n) = self.layout_svg();
         match std::fs::write(path, &svg) {
-            Ok(()) => self.set_status(format!(
-                "Exported {n} panel layout to {}",
-                path.display()
-            )),
+            Ok(()) => self.set_status(format!("Exported {n} panel layout to {}", path.display())),
             Err(e) => self.set_status(format!("Layout export failed: {e}")),
         }
     }
@@ -3875,8 +6132,7 @@ impl FlowersApp {
 
     /// Add the current main plot to the layout canvas.
     fn add_layout_current(&mut self) {
-        let (Some(s), Some(x), Some(y)) = (self.current_sample, self.x_param, self.y_param)
-        else {
+        let (Some(s), Some(x), Some(y)) = (self.current_sample, self.x_param, self.y_param) else {
             self.set_status("Select a sample and X/Y parameters first");
             return;
         };
@@ -3908,10 +6164,24 @@ impl FlowersApp {
         self.set_status("Added panel to layout");
     }
 
-    /// Add the detached population window's current view to the layout canvas.
-    fn add_layout_popout(&mut self) {
+    /// Add the focused (or first open) graph window to the layout.
+    fn add_layout_popout_active(&mut self) {
+        let idx = self
+            .active_popout
+            .filter(|&i| self.popouts.get(i).is_some_and(|st| st.open))
+            .or_else(|| self.popouts.iter().position(|st| st.open));
+        if let Some(i) = idx {
+            let st = self.popouts[i].clone();
+            self.add_layout_popout(&st);
+        } else {
+            self.set_status("Open a detached population window first");
+        }
+    }
+
+    /// Add a detached graph window's current view to the layout canvas.
+    fn add_layout_popout(&mut self, st: &PopoutState) {
         let (Some(s), Some(gate_idx), Some(x), Some(y)) =
-            (self.current_sample, self.popout.gate, self.popout.x_param, self.popout.y_param)
+            (self.current_sample, st.gate, st.x_param, st.y_param)
         else {
             self.set_status("Open a detached population window first");
             return;
@@ -3933,7 +6203,7 @@ impl FlowersApp {
             sample: s,
             x,
             y,
-            view: self.popout.view,
+            view: st.view,
             gate: Some(gate_idx),
             title,
             title_size: 14.0,
@@ -3953,7 +6223,13 @@ impl FlowersApp {
     }
 
     /// Compute normalised (0..1) preview points for a gated population.
-    fn make_popout_preview(&self, sample: usize, gate_idx: usize, x: usize, y: usize) -> Vec<[f32; 2]> {
+    fn make_popout_preview(
+        &self,
+        sample: usize,
+        gate_idx: usize,
+        x: usize,
+        y: usize,
+    ) -> Vec<[f32; 2]> {
         self.make_preview_points(sample, Some(gate_idx), x, y)
     }
 
@@ -3977,7 +6253,8 @@ impl FlowersApp {
         // Collect the (x, y) values for all events or the gated subset.
         let pts: Vec<[f64; 2]> = match gate {
             Some(g) => {
-                let pops = compute_gate_populations(&fcs.data, &self.gates, Some(sample), s.apply_gates);
+                let pops =
+                    compute_gate_populations(&fcs.data, &self.gates, Some(sample), s.apply_gates);
                 let idxs = pops.get(g).cloned().unwrap_or_default();
                 idxs.iter()
                     .map(|&e| [fcs.data[[e, x]] as f64, fcs.data[[e, y]] as f64])
@@ -4017,10 +6294,12 @@ impl FlowersApp {
         let xspan = (xmax - xmin).max(f64::EPSILON);
         let yspan = (ymax - ymin).max(f64::EPSILON);
         out.into_iter()
-            .map(|p| [
-                ((p[0] as f64 - xmin) / xspan) as f32,
-                ((p[1] as f64 - ymin) / yspan) as f32,
-            ])
+            .map(|p| {
+                [
+                    ((p[0] as f64 - xmin) / xspan) as f32,
+                    ((p[1] as f64 - ymin) / yspan) as f32,
+                ]
+            })
             .collect()
     }
 
@@ -4041,8 +6320,7 @@ impl FlowersApp {
     /// The interactive layout canvas (drag to move, corner to resize).
     fn layout_canvas(&mut self, ui: &mut egui::Ui, p: Palette) {
         let canvas_size = egui::vec2(920.0, 560.0);
-        let (response, painter) =
-            ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
+        let (response, painter) = ui.allocate_painter(canvas_size, egui::Sense::click_and_drag());
         let origin = response.rect.min;
         let bg = p.soft;
         painter.rect_filled(response.rect, 4.0_f32, bg);
@@ -4054,60 +6332,59 @@ impl FlowersApp {
         if !down {
             self.layout_drag = None;
         }
-        if down && self.layout_drag.is_none()
-            && let Some(p) = pointer {
-                // Only clear/select from canvas clicks; ignore clicks on
-                // toolbar buttons (which lie outside the canvas rect).
-                if response.rect.contains(p) {
-                    let mut hit: Option<(usize, bool)> = None;
-                    for (i, panel) in self.layout_panels.iter().enumerate().rev() {
-                        let r = panel.rect.translate(origin.to_vec2());
-                        let handle = egui::Rect::from_min_size(
-                            r.max - egui::vec2(14.0, 14.0),
-                            egui::vec2(14.0, 14.0),
-                        );
-                        if handle.contains(p) {
-                            hit = Some((i, true));
-                            break;
-                        }
-                        if r.contains(p) {
-                            hit = Some((i, false));
-                            break;
-                        }
+        if down
+            && self.layout_drag.is_none()
+            && let Some(p) = pointer
+        {
+            // Only clear/select from canvas clicks; ignore clicks on
+            // toolbar buttons (which lie outside the canvas rect).
+            if response.rect.contains(p) {
+                let mut hit: Option<(usize, bool)> = None;
+                for (i, panel) in self.layout_panels.iter().enumerate().rev() {
+                    let r = panel.rect.translate(origin.to_vec2());
+                    let handle = egui::Rect::from_min_size(
+                        r.max - egui::vec2(14.0, 14.0),
+                        egui::vec2(14.0, 14.0),
+                    );
+                    if handle.contains(p) {
+                        hit = Some((i, true));
+                        break;
                     }
-                    match hit {
-                        Some((i, resize)) => {
-                            self.layout_selected = Some(i);
-                            let r = self.layout_panels[i].rect.translate(origin.to_vec2());
-                            let grab = if resize {
-                                egui::Vec2::ZERO
-                            } else {
-                                p - r.min
-                            };
-                            self.layout_drag = Some(LayoutDrag {
-                                panel: i,
-                                resize,
-                                grab,
-                            });
-                        }
-                        None => self.layout_selected = None,
+                    if r.contains(p) {
+                        hit = Some((i, false));
+                        break;
                     }
                 }
+                match hit {
+                    Some((i, resize)) => {
+                        self.layout_selected = Some(i);
+                        let r = self.layout_panels[i].rect.translate(origin.to_vec2());
+                        let grab = if resize { egui::Vec2::ZERO } else { p - r.min };
+                        self.layout_drag = Some(LayoutDrag {
+                            panel: i,
+                            resize,
+                            grab,
+                        });
+                    }
+                    None => self.layout_selected = None,
+                }
             }
+        }
         // Apply the manipulation.
         if let Some(drag) = self.layout_drag
-            && let Some(p) = pointer {
-                let local = egui::pos2(p.x - origin.x, p.y - origin.y);
-                if let Some(panel) = self.layout_panels.get_mut(drag.panel) {
-                    if drag.resize {
-                        let size = (local - panel.rect.min).max(egui::vec2(80.0, 60.0));
-                        panel.rect = egui::Rect::from_min_max(panel.rect.min, panel.rect.min + size);
-                    } else {
-                        let new_min = local - drag.grab;
-                        panel.rect = egui::Rect::from_min_size(new_min, panel.rect.size());
-                    }
+            && let Some(p) = pointer
+        {
+            let local = egui::pos2(p.x - origin.x, p.y - origin.y);
+            if let Some(panel) = self.layout_panels.get_mut(drag.panel) {
+                if drag.resize {
+                    let size = (local - panel.rect.min).max(egui::vec2(80.0, 60.0));
+                    panel.rect = egui::Rect::from_min_max(panel.rect.min, panel.rect.min + size);
+                } else {
+                    let new_min = local - drag.grab;
+                    panel.rect = egui::Rect::from_min_size(new_min, panel.rect.size());
                 }
             }
+        }
 
         // Draw panels back-to-front.
         for (i, panel) in self.layout_panels.iter().enumerate() {
@@ -4209,6 +6486,204 @@ impl FlowersApp {
         }
     }
 
+    /// Draw one detached graph window with its own plot spec (V7).
+    fn popout_window(&mut self, ctx: &egui::Context, idx: usize, st: &mut PopoutState) {
+        let p = self.palette();
+        let mut open = st.open;
+        let gate_idx = st.gate;
+        let title = gate_idx
+            .and_then(|i| self.gates.get(i))
+            .map(|g| format!("Population: {}", g.name))
+            .unwrap_or_else(|| "Population".to_string());
+        let response = egui::Window::new(title)
+            .id(egui::Id::new(("popout_window", idx)))
+            .open(&mut open)
+            .resizable(true)
+            .default_size([760.0, 600.0])
+            .show(ctx, |ui| {
+                card_frame(p).show(ui, |ui| {
+                    let Some(i) = gate_idx else {
+                        ui.label(
+                            egui::RichText::new("Select a gate in the tree.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        return;
+                    };
+                    if self.current_sample.is_none() {
+                        ui.label(
+                            egui::RichText::new("No sample selected.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        return;
+                    }
+
+                    ui.horizontal(|ui| {
+                        if primary_button(ui, p, "Add this plot to layout")
+                            .on_hover_text("Add this detached population view to the Layout Editor")
+                            .clicked()
+                        {
+                            self.add_layout_popout(st);
+                        }
+                    });
+                    ui.separator();
+
+                    // The detached window exposes the same controls as the main
+                    // window: axes, ranges, scales, colour, view and gating.
+                    self.popout_controls(ui, p, i, st, idx);
+                    ui.separator();
+
+                    let (Some(x), Some(y)) = (st.x_param, st.y_param) else {
+                        ui.label(
+                            egui::RichText::new("Select X and Y parameters.")
+                                .color(p.muted)
+                                .small(),
+                        );
+                        return;
+                    };
+                    let (x_label, y_label) = match self.current_fcs() {
+                        Some(f) => (param_display_name(f, x), param_display_name(f, y)),
+                        None => (String::new(), String::new()),
+                    };
+                    let pts = self.population_points_xy(i, x, y);
+                    let visuals =
+                        self.gate_visuals_for(x, y, st.x_range, st.y_range, st.selected_gate);
+                    let handles = match st.selected_gate {
+                        Some(gi)
+                            if self.gates.get(gi).map(|g| (g.x_idx, g.y_idx)) == Some((x, y)) =>
+                        {
+                            self.gates[gi].kind.handles()
+                        }
+                        _ => Vec::new(),
+                    };
+                    let cfg = PlotCfg {
+                        points: pts,
+                        x_range: st.x_range,
+                        y_range: st.y_range,
+                        x_scale: st.x_scale.clone(),
+                        y_scale: st.y_scale.clone(),
+                        point_color: st.point_color,
+                        gradient: st.gradient,
+                        view: st.view,
+                        density_map: st.density_map,
+                        data_overlays: self.data_overlays_for_plot(),
+                        contour_levels: st.contour_levels,
+                        gates: visuals,
+                        handles,
+                        x_label: format!("{x_label} ({})", scale_label(&st.x_scale)),
+                        y_label: if matches!(st.view, ViewMode::Histogram) {
+                            "Count".to_string()
+                        } else {
+                            format!("{y_label} ({})", scale_label(&st.y_scale))
+                        },
+                        interactive: true,
+                        line_preview: matches!(st.new_gate_type, NewGateType::Bilinear),
+                        smoothing: self.plot_smoothing,
+                        resolution: self.plot_resolution,
+                        outlier_clip_percent: self.outlier_clip_percent,
+                        large_dots: self.large_dots,
+                        grid: self.show_grid,
+                        medians: self.show_medians,
+                        show_event_numbers: self.show_event_numbers,
+                        show_names_frequencies: self.show_names_frequencies,
+                        notation: self.tick_notation,
+                        show_axis_labels: self.show_axis_labels,
+                        show_ticks: self.show_ticks,
+                        show_numbers: self.show_numbers,
+                        axis_histograms: self.show_axis_histograms,
+                        transposed: false,
+                    };
+                    let mut cfg = cfg;
+                    self.apply_transpose_to_cfg(&mut cfg);
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} events shown — drag to gate, drag handles to edit",
+                            cfg.points.len()
+                        ))
+                        .small()
+                        .color(p.muted),
+                    );
+                    if matches!(st.view, ViewMode::Pseudocolor | ViewMode::Zebra) {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("density").small().color(p.muted));
+                            ui.label(egui::RichText::new("low").small().color(p.muted));
+                            density_legend_ui(ui, &st.density_map);
+                            ui.label(egui::RichText::new("high").small().color(p.muted));
+                        });
+                    }
+
+                    let mut inter = PlotInteraction {
+                        drag_start: st.interact.drag_start,
+                        drag_current: st.interact.drag_current,
+                        ..Default::default()
+                    };
+                    show_plot(ui, &format!("popout_plot_{idx}"), &cfg, &mut inter);
+
+                    let tol = 0.02
+                        * (st.x_range.1 - st.x_range.0)
+                            .abs()
+                            .max((st.y_range.1 - st.y_range.0).abs())
+                            .max(1.0);
+                    let outcome = drive_interact(
+                        &mut st.interact,
+                        &inter,
+                        &self.gates,
+                        st.selected_gate,
+                        st.new_gate_type,
+                        tol,
+                    );
+                    if let Some(outcome) = outcome {
+                        match outcome {
+                            InteractOutcome::Create { start, end } => {
+                                let span = (st.x_range.1 - st.x_range.0)
+                                    .abs()
+                                    .max((st.y_range.1 - st.y_range.0).abs())
+                                    .max(1e-9);
+                                let created = self.create_gates(
+                                    start,
+                                    end,
+                                    x,
+                                    y,
+                                    st.gate,
+                                    st.new_gate_type,
+                                    span,
+                                );
+                                if let Some(&last) = created.last() {
+                                    st.selected_gate = Some(last);
+                                }
+                            }
+                            InteractOutcome::Update { gate, kind } => {
+                                st.selected_gate = Some(gate);
+                                let old = self.gates.get(gate).map(|g| g.kind.clone());
+                                if gate < self.gates.len() {
+                                    self.gates[gate].kind = kind;
+                                }
+                                if let Some(old) = old {
+                                    let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
+                                    if let Some(new_kind) = new_kind {
+                                        self.commit_gate_edit(gate, &old, &new_kind);
+                                    }
+                                }
+                                self.recompute_populations();
+                            }
+                            InteractOutcome::Select(gate) => {
+                                st.selected_gate = Some(gate);
+                            }
+                            InteractOutcome::Click(p) => self.create_click_gate(p, Some(idx)),
+                        }
+                    }
+                });
+            });
+
+        if let Some(resp) = response
+            && resp.response.hovered()
+        {
+            self.active_popout = Some(idx);
+        }
+        st.open = open;
+    }
+
     /// The floating layout-editor window.
     fn layout_window(&mut self, ctx: &egui::Context) {
         if !self.layout_open {
@@ -4226,7 +6701,7 @@ impl FlowersApp {
                         if primary_button(ui, p, "Add current plot").clicked() {
                             self.add_layout_current();
                         }
-                        let popout_open = self.popout.open;
+                        let popout_open = self.popouts.iter().any(|st| st.open);
                         if ui
                             .add_enabled(
                                 popout_open,
@@ -4241,7 +6716,7 @@ impl FlowersApp {
                             )
                             .clicked()
                         {
-                            self.add_layout_popout();
+                            self.add_layout_popout_active();
                         }
                         if secondary_button(ui, p, "Tile").clicked() {
                             self.tile_layout();
@@ -4440,9 +6915,17 @@ fn layout_canvas_size(panels: &[LayoutPanelSpec]) -> (u32, u32) {
     ((max_x + 20.0) as u32, (max_y + 20.0) as u32)
 }
 
-fn scale_label(s: AxisScale) -> &'static str {    match s {
+fn scale_label(s: &AxisScale) -> &'static str {
+    match s {
         AxisScale::Linear => "linear",
         AxisScale::Log => "log10",
+        AxisScale::Arcsinh { .. } => "arcsinh",
+        AxisScale::Biexponential(_) => "biexponential",
+        AxisScale::Logicle(_) => "logicle",
+        AxisScale::Hyperlog(_) => "hyperlog",
+        AxisScale::RobustLog { .. } => "robust log",
+        AxisScale::Miltenyi { .. } => "miltenyi",
+        AxisScale::Lookup { .. } => "lookup",
     }
 }
 
@@ -4511,13 +6994,14 @@ fn gate_tree_ui(
                 count,
                 pct_label
             );
-            if ui
-                .selectable_label(selected == Some(node), label)
-                .clicked()
-            {
+            if ui.selectable_label(selected == Some(node), label).clicked() {
                 actions.push(TreeAction::Select(node));
             }
-            if ui.small_button("◧").on_hover_text("Show in detached window").clicked() {
+            if ui
+                .small_button("◧")
+                .on_hover_text("Show in detached window")
+                .clicked()
+            {
                 actions.push(TreeAction::Popout(node));
             }
             if ui.small_button("✖").on_hover_text("Delete gate").clicked() {
@@ -4589,6 +7073,317 @@ impl FlowersApp {
         // prompt as File ▸ Quit.
         self.handle_window_close_request(ctx);
 
+        // ----- 3D view (V3) -----
+        if self.view3d_open {
+            egui::Window::new("3D View")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(660.0)
+                .show(ctx, |ui| {
+                    let names: Vec<String> = self
+                        .current_fcs()
+                        .map(|fcs| {
+                            (0..fcs.parameters.len())
+                                .map(|i| param_display_name(fcs, i))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Mode:");
+                        egui::ComboBox::new("view3d_mode", "")
+                            .selected_text(self.view3d_spec.mode.label())
+                            .show_ui(ui, |ui| {
+                                for mode in crate::plot3d::View3DMode::all() {
+                                    ui.selectable_value(
+                                        &mut self.view3d_spec.mode,
+                                        mode,
+                                        mode.label(),
+                                    );
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("X:");
+                        egui::ComboBox::new("view3d_x", "")
+                            .selected_text(
+                                names.get(self.view3d_spec.x).cloned().unwrap_or_default(),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.view3d_spec.x, i, name);
+                                }
+                            });
+                        ui.label("Y:");
+                        egui::ComboBox::new("view3d_y", "")
+                            .selected_text(
+                                names.get(self.view3d_spec.y).cloned().unwrap_or_default(),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.view3d_spec.y, i, name);
+                                }
+                            });
+                        ui.label("Z:");
+                        egui::ComboBox::new("view3d_z", "")
+                            .selected_text(
+                                names.get(self.view3d_spec.z).cloned().unwrap_or_default(),
+                            )
+                            .show_ui(ui, |ui| {
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.view3d_spec.z, i, name);
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Colour by:");
+                        egui::ComboBox::new("view3d_color", "")
+                            .selected_text(
+                                self.view3d_spec
+                                    .color
+                                    .and_then(|i| names.get(i).cloned())
+                                    .unwrap_or_else(|| "Z".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.view3d_spec.color, None, "Z");
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.view3d_spec.color, Some(i), name);
+                                }
+                            });
+                        ui.label("Size by:");
+                        egui::ComboBox::new("view3d_size", "")
+                            .selected_text(
+                                self.view3d_spec
+                                    .size
+                                    .and_then(|i| names.get(i).cloned())
+                                    .unwrap_or_else(|| "uniform".to_string()),
+                            )
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(&mut self.view3d_spec.size, None, "uniform");
+                                for (i, name) in names.iter().enumerate() {
+                                    ui.selectable_value(&mut self.view3d_spec.size, Some(i), name);
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.view3d_spec.camera.yaw_deg, -180.0..=180.0)
+                                .text("yaw°"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.view3d_spec.camera.pitch_deg, -89.0..=89.0)
+                                .text("pitch°"),
+                        );
+                        ui.add(
+                            egui::Slider::new(&mut self.view3d_spec.camera.zoom, 0.2..=3.0)
+                                .text("zoom"),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.button("Export SVG").clicked() {
+                            self.export_view3d_svg();
+                        }
+                        if ui.button("Export animation…").clicked() {
+                            self.export_view3d_animation();
+                        }
+                        ui.add(
+                            egui::DragValue::new(&mut self.view3d_frames)
+                                .range(2..=240)
+                                .prefix("frames: "),
+                        );
+                        if ui.button("Close").clicked() {
+                            self.view3d_open = false;
+                        }
+                    });
+
+                    // Interactive preview drawn with the egui painter.
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(620.0, 440.0), egui::Sense::hover());
+                    let painter = ui.painter_at(rect);
+                    painter.rect_filled(rect, 4.0, egui::Color32::from_rgb(248, 250, 252));
+                    let camera = self.view3d_spec.camera;
+                    let w = rect.width() as u32;
+                    let h = rect.height() as u32;
+                    // Cube frame.
+                    let corners = [
+                        [-1.0, -1.0, -1.0],
+                        [1.0, -1.0, -1.0],
+                        [1.0, 1.0, -1.0],
+                        [-1.0, 1.0, -1.0],
+                        [-1.0, -1.0, 1.0],
+                        [1.0, -1.0, 1.0],
+                        [1.0, 1.0, 1.0],
+                        [-1.0, 1.0, 1.0],
+                    ];
+                    let proj: Vec<[f64; 2]> = corners
+                        .iter()
+                        .map(|&c| crate::plot3d::project_point(c, &camera, w, h).screen)
+                        .collect();
+                    let edges = [
+                        (0, 1),
+                        (1, 2),
+                        (2, 3),
+                        (3, 0),
+                        (4, 5),
+                        (5, 6),
+                        (6, 7),
+                        (7, 4),
+                        (0, 4),
+                        (1, 5),
+                        (2, 6),
+                        (3, 7),
+                    ];
+                    let stroke = egui::Stroke::new(0.8_f32, egui::Color32::from_gray(160));
+                    for (a, b) in edges {
+                        let pa = egui::pos2(
+                            rect.min.x + proj[a][0] as f32,
+                            rect.min.y + proj[a][1] as f32,
+                        );
+                        let pb = egui::pos2(
+                            rect.min.x + proj[b][0] as f32,
+                            rect.min.y + proj[b][1] as f32,
+                        );
+                        painter.line_segment([pa, pb], stroke);
+                    }
+                    // Depth-sorted shapes.
+                    let shapes = self
+                        .current_fcs()
+                        .map(|fcs| {
+                            crate::plot3d::preview_shapes(&fcs.data, &self.view3d_spec, w, h)
+                        })
+                        .unwrap_or_default();
+                    for shape in shapes {
+                        match shape {
+                            crate::plot3d::PreviewShape::Dot {
+                                center,
+                                radius,
+                                color,
+                                opacity,
+                            } => {
+                                painter.circle_filled(
+                                    egui::pos2(
+                                        rect.min.x + center[0] as f32,
+                                        rect.min.y + center[1] as f32,
+                                    ),
+                                    radius as f32,
+                                    egui::Color32::from_rgba_unmultiplied(
+                                        color.0,
+                                        color.1,
+                                        color.2,
+                                        (opacity * 255.0).round() as u8,
+                                    ),
+                                );
+                            }
+                            crate::plot3d::PreviewShape::Poly { points, color } => {
+                                let pts: Vec<egui::Pos2> = points
+                                    .iter()
+                                    .map(|p| {
+                                        egui::pos2(
+                                            rect.min.x + p[0] as f32,
+                                            rect.min.y + p[1] as f32,
+                                        )
+                                    })
+                                    .collect();
+                                painter.add(egui::Shape::convex_polygon(
+                                    pts,
+                                    egui::Color32::from_rgb(color.0, color.1, color.2),
+                                    egui::Stroke::new(0.4_f32, egui::Color32::from_gray(90)),
+                                ));
+                            }
+                        }
+                    }
+                });
+        }
+
+        // ----- Statistics panel (S5) -----
+        // Window listing the statistic sets configured for the current analysis,
+        // with add / copy / remove / export actions and per-set statistics.
+        if self.stats_panel_open {
+            egui::Window::new("Statistics")
+                .collapsible(false)
+                .resizable(true)
+                .order(egui::Order::Foreground)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.heading("Statistics");
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Add statistic set").clicked() {
+                            let count = self.statistic_sets.len();
+                            if count > 0 {
+                                self.stats_panel_add_set(count - 1);
+                            }
+                        }
+                        if ui.button("Copy set").clicked() {
+                            let count = self.statistic_sets.len();
+                            if count > 0 {
+                                self.stats_panel_copy_set(count - 1);
+                            }
+                        }
+                        if ui.button("Remove set").clicked() {
+                            let count = self.statistic_sets.len();
+                            if count > 0 {
+                                self.stats_panel_remove_set(count - 1);
+                            }
+                        }
+                        if ui.button("Export sets").clicked()
+                            && let Err(message) = self.stats_panel_export()
+                        {
+                            self.set_status(format!("Export failed: {message}"));
+                        }
+                        if ui.button("Export statistics CSV").clicked() {
+                            let sample_name = self
+                                .current_sample
+                                .map(|i| self.samples[i].id.clone())
+                                .unwrap_or_else(|| "sample".to_string());
+                            let profiles = self.stats_panel_profiles();
+                            let rows = statistics_rows(&sample_name, &profiles);
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("CSV", &["csv"])
+                                .set_file_name("statistics.csv")
+                                .save_file()
+                            {
+                                if let Err(e) = write_statistics_csv(&path, &rows) {
+                                    self.set_status(format!("Export failed: {e}"));
+                                } else {
+                                    self.set_status(format!(
+                                        "Exported {} statistics rows to {}",
+                                        rows.len(),
+                                        path.display()
+                                    ));
+                                }
+                            }
+                        }
+                        if ui.button("Close").clicked() {
+                            self.stats_panel_open = false;
+                        }
+                    });
+                    ui.add_space(6.0);
+                    if self.statistic_sets.is_empty() {
+                        ui.weak("No statistic sets yet. Add one to start computing.");
+                    }
+                    for i in 0..self.statistic_sets.len() {
+                        let set_name = self.statistic_sets[i].name.clone();
+                        let stat_count = self.statistic_sets[i].stats.len();
+                        ui.collapsing(set_name, |ui| {
+                            let rows = self.stats_panel_rows();
+                            for row in rows {
+                                ui.label(format!(
+                                    "  {} / {} = {:.4}",
+                                    row.parameter,
+                                    crate::statistics::statistic_label(&row.statistic),
+                                    row.value
+                                ));
+                            }
+                            ui.weak(format!("{stat_count} statistic(s) configured"));
+                        });
+                        if ui.small_button("✖").clicked() {
+                            self.stats_panel_remove_set(i);
+                        }
+                    }
+                });
+        }
+
         // ----- Quit confirmation -----
         // Shown when the user asks to quit with unsaved changes; offers to save
         // first, quit without saving, or cancel.
@@ -4609,16 +7404,16 @@ impl FlowersApp {
                                     .add_filter("Flowers workspace", &["wsp", "json"])
                                     .set_file_name("workspace.wsp")
                                     .save_file()
-                                {
-                                    self.save_workspace(&path);
-                                    // Keep the dialog open if saving failed so
-                                    // the user can retry or quit explicitly.
-                                    if !self.dirty {
-                                        self.quit_confirm = false;
-                                        self.allow_close = true;
-                                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                                    }
+                            {
+                                self.save_workspace(&path);
+                                // Keep the dialog open if saving failed so
+                                // the user can retry or quit explicitly.
+                                if !self.dirty {
+                                    self.quit_confirm = false;
+                                    self.allow_close = true;
+                                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                                 }
+                            }
                             if ui.button("Quit Without Saving").clicked() {
                                 self.quit_confirm = false;
                                 self.allow_close = true;
@@ -4637,14 +7432,94 @@ impl FlowersApp {
         if !ctx.wants_keyboard_input() {
             let cmd = egui::Modifiers::COMMAND;
             // Most specific shortcut first: extra Shift is ignored by matching.
-            let redo_shift = ctx
-                .input_mut(|i| i.consume_key(cmd | egui::Modifiers::SHIFT, egui::Key::Z));
+            let redo_shift =
+                ctx.input_mut(|i| i.consume_key(cmd | egui::Modifiers::SHIFT, egui::Key::Z));
             let redo_y = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::Y));
             let undo = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::Z));
             if redo_shift || redo_y {
                 self.redo();
             } else if undo {
                 self.undo();
+            }
+
+            // Gate clipboard shortcuts. Text editors keep their own Ctrl+C/V
+            // because this block only runs when no widget wants keyboard input.
+            let copy = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::C));
+            let paste = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::V));
+            let duplicate = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::D));
+            if copy && let Some(i) = self.selected_gate {
+                if let Some(json) = self.copy_gate(i) {
+                    ctx.copy_text(json);
+                }
+            } else if paste {
+                self.paste_gate();
+            } else if duplicate && let Some(i) = self.selected_gate {
+                self.duplicate_gate(i);
+            }
+
+            // Graph-window navigation shortcuts (V7). Text fields keep their
+            // own undo stack, so these only run while no widget wants keys.
+            let alt = egui::Modifiers::ALT;
+            let prev_sample = ctx.input_mut(|i| i.consume_key(alt, egui::Key::PageUp));
+            let next_sample = ctx.input_mut(|i| i.consume_key(alt, egui::Key::PageDown));
+            if prev_sample {
+                self.step_sample(-1);
+            } else if next_sample {
+                self.step_sample(1);
+            }
+
+            let open_bracket = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::OpenBracket));
+            let close_bracket = ctx.input_mut(|i| i.consume_key(cmd, egui::Key::CloseBracket));
+            let next_sibling = ctx.input_mut(|i| {
+                i.consume_key(cmd | egui::Modifiers::SHIFT, egui::Key::CloseBracket)
+            });
+            let dup_window =
+                ctx.input_mut(|i| i.consume_key(cmd | egui::Modifiers::SHIFT, egui::Key::D));
+            if let Some(nav) = if open_bracket {
+                Some(PopNav::Parent)
+            } else if close_bracket {
+                Some(PopNav::FirstChild)
+            } else if next_sibling {
+                Some(PopNav::NextSibling)
+            } else {
+                None
+            } {
+                let idx = self
+                    .active_popout
+                    .filter(|&i| self.popouts.get(i).is_some_and(|s| s.open));
+                if let Some(i) = idx {
+                    let mut st = std::mem::take(&mut self.popouts[i]);
+                    self.navigate_popout(&mut st, nav);
+                    self.popouts[i] = st;
+                }
+            }
+            if dup_window {
+                self.duplicate_active_popout();
+            }
+
+            let prev_x = ctx.input_mut(|i| i.consume_key(alt, egui::Key::ArrowLeft));
+            let next_x = ctx.input_mut(|i| i.consume_key(alt, egui::Key::ArrowRight));
+            let prev_y = ctx.input_mut(|i| i.consume_key(alt, egui::Key::ArrowUp));
+            let next_y = ctx.input_mut(|i| i.consume_key(alt, egui::Key::ArrowDown));
+            let x_delta = if prev_x {
+                -1
+            } else if next_x {
+                1
+            } else {
+                0
+            };
+            let y_delta = if prev_y {
+                -1
+            } else if next_y {
+                1
+            } else {
+                0
+            };
+            if x_delta != 0 {
+                self.cycle_plot_param(true, x_delta as isize);
+            }
+            if y_delta != 0 {
+                self.cycle_plot_param(false, y_delta as isize);
             }
         }
 
@@ -4687,6 +7562,15 @@ impl FlowersApp {
                             }
                         }
                         ui.separator();
+                        if ui.button("Statistics Panel…").clicked() {
+                            ui.close_menu();
+                            self.open_stats_panel();
+                        }
+                        if ui.button("3D View…").clicked() {
+                            ui.close_menu();
+                            self.open_view3d();
+                        }
+                        ui.separator();
                         if ui.button("Export SVG").clicked() {
                             ui.close_menu();
                             if let Some(path) = rfd::FileDialog::new()
@@ -4717,6 +7601,20 @@ impl FlowersApp {
                                 self.export_csv(&path);
                             }
                         }
+                        ui.menu_button("Multigraphs", |ui| {
+                            if ui.button("All parameters by X…").clicked() {
+                                ui.close_menu();
+                                self.export_multigraph(crate::plot::MultigraphMode::AllByX, 4);
+                            }
+                            if ui.button("All parameters by Y…").clicked() {
+                                ui.close_menu();
+                                self.export_multigraph(crate::plot::MultigraphMode::AllByY, 4);
+                            }
+                            if ui.button("NxN matrix…").clicked() {
+                                ui.close_menu();
+                                self.export_multigraph(crate::plot::MultigraphMode::NxN, 4);
+                            }
+                        });
                         ui.separator();
                         if ui.button("Quit").clicked() {
                             ui.close_menu();
@@ -4731,10 +7629,8 @@ impl FlowersApp {
 
                     // Edit dropdown (undo / redo).
                     ui.menu_button("Edit", |ui| {
-                        let undo_shortcut = egui::KeyboardShortcut::new(
-                            egui::Modifiers::COMMAND,
-                            egui::Key::Z,
-                        );
+                        let undo_shortcut =
+                            egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, egui::Key::Z);
                         let redo_shortcut = egui::KeyboardShortcut::new(
                             egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
                             egui::Key::Z,
@@ -4742,9 +7638,8 @@ impl FlowersApp {
                         if ui
                             .add_enabled(
                                 self.can_undo(),
-                                egui::Button::new("Undo").shortcut_text(
-                                    ui.ctx().format_shortcut(&undo_shortcut),
-                                ),
+                                egui::Button::new("Undo")
+                                    .shortcut_text(ui.ctx().format_shortcut(&undo_shortcut)),
                             )
                             .clicked()
                         {
@@ -4754,9 +7649,8 @@ impl FlowersApp {
                         if ui
                             .add_enabled(
                                 self.can_redo(),
-                                egui::Button::new("Redo").shortcut_text(
-                                    ui.ctx().format_shortcut(&redo_shortcut),
-                                ),
+                                egui::Button::new("Redo")
+                                    .shortcut_text(ui.ctx().format_shortcut(&redo_shortcut)),
                             )
                             .clicked()
                         {
@@ -4770,14 +7664,28 @@ impl FlowersApp {
                         self.layout_open = true;
                     }
 
+                    // Compensation editor.
+                    ui.menu_button("Compensation", |ui| {
+                        if ui.button("Open compensation editor…").clicked() {
+                            ui.close_menu();
+                            self.open_compensation();
+                        }
+                        ui.separator();
+                        if ui.button("Remove from current sample").clicked() {
+                            ui.close_menu();
+                            self.clear_compensation(false);
+                        }
+                        if ui.button("Remove from all samples").clicked() {
+                            ui.close_menu();
+                            self.clear_compensation(true);
+                        }
+                    });
+
                     // Settings dropdown.
                     ui.menu_button("Settings", |ui| {
                         ui.label("Theme:");
                         for t in [Theme::Dark, Theme::Light] {
-                            if ui
-                                .selectable_label(self.theme == t, t.label())
-                                .clicked()
-                            {
+                            if ui.selectable_label(self.theme == t, t.label()).clicked() {
                                 ui.close_menu();
                                 self.theme = t;
                             }
@@ -4809,9 +7717,10 @@ impl FlowersApp {
 
                     // Import button.
                     if primary_button(ui, p, "Import FCS").clicked()
-                        && let Some(path) = rfd::FileDialog::new().pick_file() {
-                            self.load_file(&path);
-                        }
+                        && let Some(path) = rfd::FileDialog::new().pick_file()
+                    {
+                        self.load_file(&path);
+                    }
                     ui.add_space(8.0);
 
                     // Sample list.
@@ -4821,11 +7730,7 @@ impl FlowersApp {
                         let selected = self.current_sample == Some(i);
                         let id = sample.id.clone();
                         let mut apply = sample.apply_gates;
-                        let row_fill = if selected {
-                            p.teal_light
-                        } else {
-                            p.soft
-                        };
+                        let row_fill = if selected { p.teal_light } else { p.soft };
                         let row_stroke = if selected {
                             egui::Stroke::new(1.0_f32, p.teal)
                         } else {
@@ -4838,10 +7743,7 @@ impl FlowersApp {
                             .inner_margin(egui::Margin::same(4.0))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    if ui
-                                        .selectable_label(selected, &id)
-                                        .clicked()
-                                    {
+                                    if ui.selectable_label(selected, &id).clicked() {
                                         clicked_sample = Some(i);
                                     }
                                     ui.with_layout(
@@ -4873,9 +7775,7 @@ impl FlowersApp {
                     }
                     if self.samples.is_empty() {
                         ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new("(none)").color(p.muted).small(),
-                        );
+                        ui.label(egui::RichText::new("(none)").color(p.muted).small());
                     }
                     ui.add_space(8.0);
                     section_label(
@@ -4940,7 +7840,11 @@ impl FlowersApp {
                     ui.add_space(6.0);
 
                     let Some(fcs) = self.current_fcs() else {
-                        ui.label(egui::RichText::new("No sample selected").color(p.muted).small());
+                        ui.label(
+                            egui::RichText::new("No sample selected")
+                                .color(p.muted)
+                                .small(),
+                        );
                         return;
                     };
                     let names: Vec<String> = (0..fcs.parameters.len())
@@ -4997,7 +7901,7 @@ impl FlowersApp {
                         // X axis.
                         ui.horizontal(|ui| {
                             ui.label("X scale:");
-                            for scale in [AxisScale::Linear, AxisScale::Log] {
+                            for scale in AxisScale::all() {
                                 if ui
                                     .selectable_label(self.x_scale == scale, scale.label())
                                     .clicked()
@@ -5012,6 +7916,12 @@ impl FlowersApp {
                             let span = (self.x_range.1 - self.x_range.0).abs().max(1.0);
                             ui.add(range_drag_value(&mut self.x_range.0, span));
                             ui.add(range_drag_value(&mut self.x_range.1, span));
+                            if ui.small_button("−").on_hover_text("Zoom X out").clicked() {
+                                zoom_axis_range(&mut self.x_range, &self.x_scale, 1.25);
+                            }
+                            if ui.small_button("+").on_hover_text("Zoom X in").clicked() {
+                                zoom_axis_range(&mut self.x_range, &self.x_scale, 0.8);
+                            }
                             if ui
                                 .small_button("Auto")
                                 .on_hover_text("Fit X to data")
@@ -5022,7 +7932,7 @@ impl FlowersApp {
                         });
                         ui.horizontal(|ui| {
                             ui.label("Y scale:");
-                            for scale in [AxisScale::Linear, AxisScale::Log] {
+                            for scale in AxisScale::all() {
                                 if ui
                                     .selectable_label(self.y_scale == scale, scale.label())
                                     .clicked()
@@ -5037,6 +7947,12 @@ impl FlowersApp {
                             let span = (self.y_range.1 - self.y_range.0).abs().max(1.0);
                             ui.add(range_drag_value(&mut self.y_range.0, span));
                             ui.add(range_drag_value(&mut self.y_range.1, span));
+                            if ui.small_button("−").on_hover_text("Zoom Y out").clicked() {
+                                zoom_axis_range(&mut self.y_range, &self.y_scale, 1.25);
+                            }
+                            if ui.small_button("+").on_hover_text("Zoom Y in").clicked() {
+                                zoom_axis_range(&mut self.y_range, &self.y_scale, 0.8);
+                            }
                             if ui
                                 .small_button("Auto")
                                 .on_hover_text("Fit Y to data")
@@ -5045,7 +7961,98 @@ impl FlowersApp {
                                 self.auto_y();
                             }
                         });
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("Custom lookup transform (T3)").small().color(p.muted),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Load lookup table…").clicked() {
+                                match self.open_lookup_loader() {
+                                    Ok(points) => {
+                                        let applied = self.apply_lookup_to_both();
+                                        if applied {
+                                            self.set_status(format!(
+                                                "Loaded {points} calibration points; lookup applied to X and Y"
+                                            ));
+                                        }
+                                    }
+                                    Err(message) => self.lookup_message = message,
+                                }
+                            }
+                            let save_clicked = ui.button("Save lookup table…").clicked()
+                                && !self.lookup_table.x().is_empty();
+                            if save_clicked
+                                && let Some(path) = rfd::FileDialog::new()
+                                    .add_filter("CSV", &["csv"])
+                                    .set_file_name("lookup.csv")
+                                    .save_file()
+                                    && let Err(message) = self.save_lookup(&path) {
+                                        self.lookup_message = message;
+                                    }
+                            if ui.button("Clear lookup").clicked() {
+                                self.clear_lookup();
+                            }
+                        });
+                        if !self.lookup_table.x().is_empty() {
+                            let scale_is_lookup = self.x_scale == self.lookup_table.to_scale()
+                                || self.y_scale == self.lookup_table.to_scale();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "lookup table: {} points (source: {})",
+                                    self.lookup_table.x().len(),
+                                    self.lookup_source.clone().unwrap_or_else(|| "in memory".to_string())
+                                ))
+                                .small()
+                                .color(p.muted),
+                            );
+                            if scale_is_lookup {
+                                ui.label(egui::RichText::new("Active on axis: X and/or Y").small());
+                            }
+                        }
+                        if !self.lookup_message.is_empty() {
+                            ui.weak(&self.lookup_message);
+                        }
+
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new("Autorange rules (T5)").small().color(p.muted),
+                        );
+                        ui.horizontal(|ui| {
+                            if ui.button("Add autorange rule").clicked() {
+                                self.add_autorange_rule();
+                            }
+                            if ui
+                                .button("Remove selected rule")
+                                .on_hover_text("Remove the selected automatic autorange rule")
+                                .clicked()
+                                && !self.autorange_rules.is_empty()
+                            {
+                                let last = self.autorange_rules.len() - 1;
+                                self.remove_autorange_rule(last);
+                            }
+                        });
+                        for i in 0..self.autorange_rules.len() {
+                            let summary = format!(
+                                "{}: {} ({}: {})",
+                                self.autorange_rules[i].name,
+                                self.autorange_rules[i].matcher_label(),
+                                self.autorange_rules[i].limit.label(),
+                                self.autorange_rules[i].priority
+                            );
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.autorange_rules[i].enabled, "");
+                                ui.label(egui::RichText::new(summary).small());
+                            });
+                        }
                     });
+
+                    ui.add_space(4.0);
+                    if secondary_button(ui, p, "Compensation…")
+                        .on_hover_text("Load a spillover matrix and apply it to the data")
+                        .clicked()
+                    {
+                        self.open_compensation();
+                    }
 
                     ui.collapsing("Point & view options", |ui| {
                         ui.horizontal(|ui| {
@@ -5053,9 +8060,82 @@ impl FlowersApp {
                             ui.color_edit_button_srgba(&mut self.point_color);
                         });
                         ui.checkbox(&mut self.gradient, "Density gradient layering");
+                        ui.checkbox(
+                            &mut self.overlay_populations,
+                            "Overlay other populations",
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Density map:");
+                            egui::ComboBox::new("density_map", "")
+                                .selected_text(self.density_map.label())
+                                .show_ui(ui, |ui| {
+                                    for map in crate::plot::DensityMap::all() {
+                                        ui.selectable_value(
+                                            &mut self.density_map,
+                                            map,
+                                            map.label(),
+                                        );
+                                    }
+                                });
+                        });
+                        ui.add(
+                            egui::Slider::new(&mut self.gate_line_width, 0.5..=6.0)
+                                .text("gate line width"),
+                        );
+                        ui.checkbox(
+                            &mut self.show_median_cross,
+                            "Median-cross overlay",
+                        );
+                        ui.checkbox(&mut self.magnetic_snap, "Magnetic snapping");
+                        if self.magnetic_snap {
+                            ui.add(
+                                egui::Slider::new(&mut self.magnetic_strength, 0.0..=1.0)
+                                    .text("snap strength"),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut self.magnetic_radius_frac, 0.005..=0.2)
+                                    .text("snap radius (% of span)"),
+                            );
+                        }
+                        ui.collapsing("Gate labels", |ui| {
+                            ui.checkbox(
+                                &mut self.gate_labels.show,
+                                "Show population labels",
+                            );
+                            ui.indent("gate_label_fields", |ui| {
+                                ui.checkbox(&mut self.gate_labels.name, "Name");
+                                ui.checkbox(&mut self.gate_labels.count, "Event count");
+                                ui.checkbox(
+                                    &mut self.gate_labels.percent_parent,
+                                    "% of parent",
+                                );
+                                ui.checkbox(
+                                    &mut self.gate_labels.percent_total,
+                                    "% of total",
+                                );
+                                ui.checkbox(
+                                    &mut self.gate_labels.ancestry,
+                                    "Ancestry path",
+                                );
+                            });
+                            ui.checkbox(
+                                &mut self.gate_labels.backgating,
+                                "Backgate ancestor outlines",
+                            );
+                            ui.checkbox(
+                                &mut self.gate_labels.backgate_events,
+                                "Show excluded parent events",
+                            );
+                        });
                         ui.horizontal(|ui| {
                             ui.label("View:");
-                            for mode in [ViewMode::Dots, ViewMode::Contour, ViewMode::Histogram] {
+                            for mode in [
+                                ViewMode::Dots,
+                                ViewMode::Contour,
+                                ViewMode::Histogram,
+                                ViewMode::Pseudocolor,
+                                ViewMode::Zebra,
+                            ] {
                                 if ui
                                     .selectable_label(self.view_mode == mode, mode.label())
                                     .clicked()
@@ -5072,12 +8152,101 @@ impl FlowersApp {
                         }
                     });
 
+                    ui.collapsing("Graph controls", |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.plot_smoothing, 0.0..=1.0)
+                                .text("density smoothing"),
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Resolution:");
+                            egui::ComboBox::new("plot_resolution", "")
+                                .selected_text(format!("{}²", self.plot_resolution))
+                                .show_ui(ui, |ui| {
+                                    for res in [64usize, 128, 256, 512] {
+                                        ui.selectable_value(
+                                            &mut self.plot_resolution,
+                                            res,
+                                            format!("{res}²"),
+                                        );
+                                    }
+                                });
+                            ui.label("Outliers:");
+                            egui::ComboBox::new("outlier_clip", "")
+                                .selected_text(format!("{}%", self.outlier_clip_percent))
+                                .show_ui(ui, |ui| {
+                                    for pct in [0.0f64, 1.0, 5.0, 10.0] {
+                                        ui.selectable_value(
+                                            &mut self.outlier_clip_percent,
+                                            pct,
+                                            format!("{pct}%"),
+                                        );
+                                    }
+                                });
+                        });
+                        ui.checkbox(&mut self.large_dots, "Large dots");
+                        ui.checkbox(&mut self.show_grid, "Background grid");
+                        ui.checkbox(&mut self.show_medians, "Median lines");
+                        ui.checkbox(&mut self.show_event_numbers, "Event numbers");
+                        ui.checkbox(&mut self.show_axis_histograms, "Axis histograms");
+                        ui.checkbox(
+                            &mut self.show_names_frequencies,
+                            "Names & frequencies in overlay legend",
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Tick notation:");
+                            egui::ComboBox::new("tick_notation", "")
+                                .selected_text(self.tick_notation.label())
+                                .show_ui(ui, |ui| {
+                                    for notation in crate::plot::TickNotation::all() {
+                                        ui.selectable_value(
+                                            &mut self.tick_notation,
+                                            notation,
+                                            notation.label(),
+                                        );
+                                    }
+                                });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.checkbox(&mut self.show_axis_labels, "Axis labels");
+                            ui.checkbox(&mut self.show_ticks, "Ticks");
+                            ui.checkbox(&mut self.show_numbers, "Numbers");
+                        });
+                        ui.checkbox(
+                            &mut self.transpose,
+                            "Transpose X/Y axes (display only)",
+                        );
+                        ui.horizontal(|ui| {
+                            ui.label("Y range:");
+                            let mut changed = false;
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut self.y_range.0)
+                                        .speed((self.y_data_range.1 - self.y_data_range.0).abs().max(1.0) / 100.0),
+                                )
+                                .changed();
+                            ui.label("to");
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(&mut self.y_range.1)
+                                        .speed((self.y_data_range.1 - self.y_data_range.0).abs().max(1.0) / 100.0),
+                                )
+                                .changed();
+                            if changed && self.y_range.0 > self.y_range.1 {
+                                std::mem::swap(&mut self.y_range.0, &mut self.y_range.1);
+                            }
+                            if ui.small_button("Auto").on_hover_text("Fit Y to the data").clicked() {
+                                self.y_range = normalize_span(
+                                    self.y_data_range.0,
+                                    self.y_data_range.1,
+                                );
+                            }
+                        });
+                    });
+
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new("New gate type").small().color(p.muted),
-                    );
+                    ui.label(egui::RichText::new("New gate type").small().color(p.muted));
                     for gt in NewGateType::ALL {
                         ui.radio_value(&mut self.new_gate_type, gt, gt.label());
                     }
@@ -5087,9 +8256,42 @@ impl FlowersApp {
                             self.add_default_gate();
                         }
                         if secondary_button(ui, p, "Remove selected").clicked()
-                            && let Some(i) = self.selected_gate {
-                                self.remove_gate(i);
+                            && let Some(i) = self.selected_gate
+                        {
+                            self.remove_gate(i);
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        let selected = self.selected_gate;
+                        if secondary_button(ui, p, "Copy")
+                            .on_hover_text("Copy the selected gate (Ctrl+C)")
+                            .clicked()
+                            && let Some(i) = selected
+                            && let Some(json) = self.copy_gate(i) {
+                                ui.ctx().copy_text(json);
                             }
+                        if secondary_button(ui, p, "Paste")
+                            .on_hover_text("Paste as a sibling (Ctrl+V)")
+                            .clicked()
+                        {
+                            self.paste_gate();
+                        }
+                        if secondary_button(ui, p, "Duplicate")
+                            .on_hover_text("Duplicate as a sibling (Ctrl+D)")
+                            .clicked()
+                            && let Some(i) = selected
+                        {
+                            self.duplicate_gate(i);
+                        }
+                        if secondary_button(ui, p, "Sync name")
+                            .on_hover_text(
+                                "Copy this geometry to every same-named gate on the same parameters",
+                            )
+                            .clicked()
+                            && let Some(i) = selected
+                        {
+                            self.sync_named_gates(i);
+                        }
                     });
                     ui.add_space(4.0);
                     ui.label(
@@ -5436,6 +8638,21 @@ impl FlowersApp {
                         }
                     });
 
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("Convert to:").small().color(p.muted),
+                        );
+                        for target in [
+                            crate::gating::GateShape::Rectangle,
+                            crate::gating::GateShape::Ellipse,
+                            crate::gating::GateShape::Polygon,
+                        ] {
+                            if secondary_button(ui, p, target.label()).clicked() {
+                                self.convert_gate(i, target);
+                            }
+                        }
+                    });
+
                     ui.add_space(6.0);
                     ui.separator();
                     ui.add_space(6.0);
@@ -5495,7 +8712,13 @@ impl FlowersApp {
                         }
                         _ => {
                             let c = if sel.is_none() { total } else { 0 };
-                            ("All events".to_string(), "Ungated population".to_string(), c, 100.0, 100.0)
+                            (
+                                "All events".to_string(),
+                                "Ungated population".to_string(),
+                                c,
+                                100.0,
+                                100.0,
+                            )
                         }
                     };
 
@@ -5509,11 +8732,7 @@ impl FlowersApp {
                     section_label(ui, p, &subtitle);
                     ui.add_space(6.0);
 
-                    ui.label(
-                        egui::RichText::new(&title)
-                            .strong()
-                            .color(p.ink),
-                    );
+                    ui.label(egui::RichText::new(&title).strong().color(p.ink));
                     ui.add_space(6.0);
 
                     // Metric strip: Events / % parent / % total.
@@ -5529,11 +8748,7 @@ impl FlowersApp {
                     // Gate settings.
                     if let Some(i) = sel {
                         if i < self.gates.len() {
-                            ui.label(
-                                egui::RichText::new("Gate settings")
-                                    .small()
-                                    .color(p.muted),
-                            );
+                            ui.label(egui::RichText::new("Gate settings").small().color(p.muted));
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 ui.label("Name:");
@@ -5602,9 +8817,8 @@ impl FlowersApp {
                                     );
                                     for (i, gate) in self.gates.iter().enumerate() {
                                         let c = pops.get(i).map(|v| v.len()).unwrap_or(0);
-                                        let parent_count = gate
-                                            .parent
-                                            .and_then(|p| pops.get(p).map(|v| v.len()));
+                                        let parent_count =
+                                            gate.parent.and_then(|p| pops.get(p).map(|v| v.len()));
                                         let pcts = gate_percentages(
                                             c,
                                             parent_count,
@@ -5614,15 +8828,9 @@ impl FlowersApp {
                                             .of_parent
                                             .map(|v| format!("{v:.1}%"))
                                             .unwrap_or_else(|| "—".to_string());
-                                        ui.label(
-                                            egui::RichText::new(&sample.id).small(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(&gate.name).small(),
-                                        );
-                                        ui.label(
-                                            egui::RichText::new(format!("{c}")).small(),
-                                        );
+                                        ui.label(egui::RichText::new(&sample.id).small());
+                                        ui.label(egui::RichText::new(&gate.name).small());
+                                        ui.label(egui::RichText::new(format!("{c}")).small());
                                         ui.label(
                                             egui::RichText::new(format!("{:.1}%", pcts.of_total))
                                                 .small(),
@@ -5639,104 +8847,98 @@ impl FlowersApp {
                             .add_filter("CSV", &["csv"])
                             .set_file_name("populations.csv")
                             .save_file()
-                        {
-                            self.export_csv(&path);
-                        }
+                    {
+                        self.export_csv(&path);
+                    }
                 });
             });
 
-/// A single metric cell: small caps label + value.
-fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
-    egui::Frame::none()
-        .fill(p.soft)
-        .rounding(6.0)
-        .inner_margin(egui::Margin::same(6.0))
-        .show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.label(
-                    egui::RichText::new(label)
-                        .small()
-                        .color(p.muted),
-                );
-                ui.label(
-                    egui::RichText::new(value)
-                        .strong()
-                        .color(p.ink),
-                );
-            });
-        });
-}
+        /// A single metric cell: small caps label + value.
+        fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
+            egui::Frame::none()
+                .fill(p.soft)
+                .rounding(6.0)
+                .inner_margin(egui::Margin::same(6.0))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(label).small().color(p.muted));
+                        ui.label(egui::RichText::new(value).strong().color(p.ink));
+                    });
+                });
+        }
 
         // ----- Central panel: plot card -----
         let p = self.palette();
-        egui::CentralPanel::default().frame(panel_frame(p)).show(ctx, |ui| {
-            if self.current_fcs().is_none() {
-                card_frame(p).show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Load an FCS file to begin")
+        egui::CentralPanel::default()
+            .frame(panel_frame(p))
+            .show(ctx, |ui| {
+                if self.current_fcs().is_none() {
+                    card_frame(p).show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Load an FCS file to begin")
+                                    .color(p.muted)
+                                    .small(),
+                            );
+                            ui.label(
+                                egui::RichText::new(
+                                    "Use File ▸ Load FCS, or click Import FCS on the left.",
+                                )
                                 .color(p.muted)
                                 .small(),
-                        );
-                        ui.label(
-                            egui::RichText::new("Use File ▸ Load FCS, or click Import FCS on the left.")
-                                .color(p.muted)
-                                .small(),
-                        );
-                        ui.add_space(8.0);
+                            );
+                            ui.add_space(8.0);
+                        });
                     });
-                });
-                return;
-            }
-            if self.x_param.is_none() || self.y_param.is_none() {
-                card_frame(p).show(ui, |ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new("Select X and Y parameters to plot")
-                                .color(p.muted)
-                                .small(),
-                        );
-                        ui.add_space(8.0);
+                    return;
+                }
+                if self.x_param.is_none() || self.y_param.is_none() {
+                    card_frame(p).show(ui, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new("Select X and Y parameters to plot")
+                                    .color(p.muted)
+                                    .small(),
+                            );
+                            ui.add_space(8.0);
+                        });
                     });
-                });
-                return;
-            }
-            if self.plot_points.is_empty() {
-                self.update_plot_points();
-            }
+                    return;
+                }
+                if self.plot_points.is_empty() {
+                    self.update_plot_points();
+                }
 
-            let cfg = self.main_plot_cfg();
+                let cfg = self.main_plot_cfg();
 
-            card_frame(p).show(ui, |ui| {
-                // --- Plot header: title + tools ---
-                let sample_name = self
-                    .current_sample
-                    .and_then(|i| self.samples.get(i))
-                    .map(|s| s.id.clone())
-                    .unwrap_or_default();
-                let comp_status = if self.gates.is_empty() {
-                    "no gates".to_string()
-                } else {
-                    format!("{} gate(s)", self.gates.len())
-                };
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new(&sample_name)
-                                .strong()
-                                .color(p.ink),
-                        );
-                        ui.label(
-                            egui::RichText::new(comp_status)
-                                .small()
-                                .color(p.muted),
-                        );
-                    });
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
+                card_frame(p).show(ui, |ui| {
+                    // --- Plot header: title + tools ---
+                    let sample_name = self
+                        .current_sample
+                        .and_then(|i| self.samples.get(i))
+                        .map(|s| s.id.clone())
+                        .unwrap_or_default();
+                    let comp_status = {
+                        let mut status = if self.gates.is_empty() {
+                            "no gates".to_string()
+                        } else {
+                            format!("{} gate(s)", self.gates.len())
+                        };
+                        if self.current_sample_compensated() {
+                            status.push_str(" · compensated");
+                        }
+                        status.push_str(" · ");
+                        status.push_str(&self.compensation_node_status());
+                        status
+                    };
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(&sample_name).strong().color(p.ink));
+                            ui.label(egui::RichText::new(comp_status).small().color(p.muted));
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             // Save plot (rightmost).
                             if secondary_button(ui, p, "Save PNG").clicked() {
                                 let mut dlg = rfd::FileDialog::new().set_file_name("plot.png");
@@ -5763,137 +8965,145 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
                                 .inner_margin(egui::Margin::same(2.0))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
-                                        let rect_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Rect | NewGateType::Ellipse
-                                        );
-                                        let poly_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Polygon
-                                        );
-                                        let quad_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Quadrant
-                                        );
-                                        let line_active = matches!(
-                                            self.new_gate_type,
-                                            NewGateType::Bilinear
-                                        );
-                                        if tool_button(
-                                            ui,
-                                            p,
-                                            "Rectangle",
-                                            rect_active && !poly_active && !quad_active && !line_active,
-                                        )
-                                        .clicked()
-                                        {
+                                        let rect_active =
+                                            matches!(self.new_gate_type, NewGateType::Rect);
+                                        let ellipse_active =
+                                            matches!(self.new_gate_type, NewGateType::Ellipse);
+                                        let poly_active =
+                                            matches!(self.new_gate_type, NewGateType::Polygon);
+                                        let quad_active =
+                                            matches!(self.new_gate_type, NewGateType::Quadrant);
+                                        let line_active =
+                                            matches!(self.new_gate_type, NewGateType::Bilinear);
+                                        if tool_button(ui, p, "Rectangle", rect_active).clicked() {
                                             self.new_gate_type = NewGateType::Rect;
                                         }
-                                        if tool_button(
-                                            ui,
-                                            p,
-                                            "Ellipse",
-                                            matches!(self.new_gate_type, NewGateType::Ellipse)
-                                                && !poly_active && !quad_active && !line_active,
-                                        )
-                                        .clicked()
-                                        {
+                                        if tool_button(ui, p, "Ellipse", ellipse_active).clicked() {
                                             self.new_gate_type = NewGateType::Ellipse;
                                         }
-                                        if tool_button(ui, p, "Polygon", poly_active)
-                                            .clicked()
-                                        {
+                                        if tool_button(ui, p, "Polygon", poly_active).clicked() {
                                             self.new_gate_type = NewGateType::Polygon;
                                         }
-                                        if tool_button(ui, p, "Quadrant", quad_active)
-                                            .clicked()
-                                        {
+                                        if tool_button(ui, p, "Quadrant", quad_active).clicked() {
                                             self.new_gate_type = NewGateType::Quadrant;
                                         }
-                                        if tool_button(ui, p, "Bilinear", line_active)
-                                            .clicked()
-                                        {
+                                        if tool_button(ui, p, "Bilinear", line_active).clicked() {
                                             self.new_gate_type = NewGateType::Bilinear;
                                         }
                                     });
                                 });
-                        },
-                    );
-                });
-                ui.add_space(8.0);
+                        });
+                    });
+                    ui.add_space(8.0);
 
-                // --- Plot area ---
-                // Reserve room for the footer row before the scroll area
-                // claims the remaining height. Without this the plot fills
-                // every pixel left in the card and pushes the footer (and
-                // the card's bottom border) past the bottom of the window.
-                let footer_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                let plot_height = (ui.available_height() - footer_height - 8.0).max(0.0);
-                egui::ScrollArea::both().max_height(plot_height).show(ui, |ui| {
-                    let mut inter = PlotInteraction {
-                        drag_start: self.interact.drag_start,
-                        drag_current: self.interact.drag_current,
-                        ..Default::default()
-                    };
-                    show_plot(ui, "scatter_plot", &cfg, &mut inter);
+                    // --- Plot area ---
+                    // Reserve room for the footer row before the scroll area
+                    // claims the remaining height. Without this the plot fills
+                    // every pixel left in the card and pushes the footer (and
+                    // the card's bottom border) past the bottom of the window.
+                    let footer_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                    let plot_height = (ui.available_height() - footer_height - 8.0).max(0.0);
+                    egui::ScrollArea::both()
+                        .max_height(plot_height)
+                        .show(ui, |ui| {
+                            let mut inter = PlotInteraction {
+                                drag_start: self.interact.drag_start,
+                                drag_current: self.interact.drag_current,
+                                ..Default::default()
+                            };
+                            show_plot(ui, "scatter_plot", &cfg, &mut inter);
 
-                    let tol = 0.02
-                        * (self.x_range.1 - self.x_range.0)
-                            .abs()
-                            .max((self.y_range.1 - self.y_range.0).abs())
-                            .max(1.0);
-                    let outcome = drive_interact(
-                        &mut self.interact,
-                        &inter,
-                        &self.gates,
-                        self.selected_gate,
-                        self.new_gate_type,
-                        tol,
-                    );
-                    if let Some(outcome) = outcome {
-                        match outcome {
-                            InteractOutcome::Create { start, end } => {
-                                self.create_gate_from_drag(start, end)
-                            }
-                            InteractOutcome::Update { gate, kind } => {
-                                let old = self.gates.get(gate).map(|g| g.kind.clone());
-                                if gate < self.gates.len() {
-                                    self.gates[gate].kind = kind;
-                                }
-                                if let Some(old) = old {
-                                    let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
-                                    if let Some(new_kind) = new_kind {
-                                        self.commit_gate_edit(gate, &old, &new_kind);
+                            let tol = 0.02
+                                * (self.x_range.1 - self.x_range.0)
+                                    .abs()
+                                    .max((self.y_range.1 - self.y_range.0).abs())
+                                    .max(1.0);
+                            let outcome = drive_interact(
+                                &mut self.interact,
+                                &inter,
+                                &self.gates,
+                                self.selected_gate,
+                                self.new_gate_type,
+                                tol,
+                            );
+                            if let Some(outcome) = outcome {
+                                match outcome {
+                                    InteractOutcome::Create { start, end } => {
+                                        self.create_gate_from_drag(start, end)
                                     }
+                                    InteractOutcome::Update { gate, kind } => {
+                                        self.selected_gate = Some(gate);
+                                        self.sync_name_edit();
+                                        let old = self.gates.get(gate).map(|g| g.kind.clone());
+                                        if gate < self.gates.len() {
+                                            self.gates[gate].kind = kind;
+                                        }
+                                        if let Some(old) = old {
+                                            let new_kind =
+                                                self.gates.get(gate).map(|g| g.kind.clone());
+                                            if let Some(new_kind) = new_kind {
+                                                self.commit_gate_edit(gate, &old, &new_kind);
+                                            }
+                                        }
+                                        self.recompute_populations();
+                                    }
+                                    InteractOutcome::Select(gate) => {
+                                        self.selected_gate = Some(gate);
+                                        self.sync_name_edit();
+                                    }
+                                    InteractOutcome::Click(p) => self.create_click_gate(p, None),
                                 }
-                                self.recompute_populations();
                             }
-                            InteractOutcome::Click(p) => {
-                                self.create_click_gate(p, false)
-                            }
-                        }
-                    }
-                });
-                ui.add_space(8.0);
+                        });
+                    ui.add_space(8.0);
 
-                // --- Plot footer: hints + options ---
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Draw hints")
-                            .small()
-                            .color(p.muted),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("drag").small().strong().color(p.ink));
-                    ui.label(" to draw a gate  ");
-                    ui.label(egui::RichText::new("click").small().strong().color(p.ink));
-                    ui.label(" to place a quadrant/bilinear gate  ");
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
+                    // Density-map legend for pseudocolour / zebra views.
+                    if matches!(self.view_mode, ViewMode::Pseudocolor | ViewMode::Zebra) {
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("density").small().color(p.muted));
+                            ui.label(egui::RichText::new("low").small().color(p.muted));
+                            density_legend_ui(ui, &self.density_map);
+                            ui.label(egui::RichText::new("high").small().color(p.muted));
+                        });
+                    }
+
+                    // --- Plot footer: hints + options ---
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Draw hints").small().color(p.muted));
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("drag").small().strong().color(p.ink));
+                        ui.label(" to draw a gate  ");
+                        ui.label(egui::RichText::new("click").small().strong().color(p.ink));
+                        ui.label(" to place a quadrant/bilinear gate  ");
+                        if self.transpose {
+                            ui.label(
+                                egui::RichText::new("axes transposed — gate editing paused")
+                                    .small()
+                                    .color(p.muted),
+                            );
+                        }
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("X").small().strong().color(p.muted));
+                        if ui.small_button("−").on_hover_text("Zoom X out").clicked() {
+                            zoom_axis_range(&mut self.x_range, &self.x_scale, 1.25);
+                        }
+                        if ui.small_button("+").on_hover_text("Zoom X in").clicked() {
+                            zoom_axis_range(&mut self.x_range, &self.x_scale, 0.8);
+                        }
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new("Y").small().strong().color(p.muted));
+                        if ui.small_button("−").on_hover_text("Zoom Y out").clicked() {
+                            zoom_axis_range(&mut self.y_range, &self.y_scale, 1.25);
+                        }
+                        if ui.small_button("+").on_hover_text("Zoom Y in").clicked() {
+                            zoom_axis_range(&mut self.y_range, &self.y_scale, 0.8);
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.checkbox(
                                 &mut self.gradient,
-                                egui::RichText::new("density gradient").small().color(p.muted),
+                                egui::RichText::new("density gradient")
+                                    .small()
+                                    .color(p.muted),
                             );
                             ui.add_space(8.0);
                             ui.label(
@@ -5908,182 +9118,301 @@ fn metric_cell(ui: &mut egui::Ui, p: Palette, label: &str, value: &str) {
                                 .color(p.muted),
                             );
                             ui.label(" events drawn");
-                        },
-                    );
-                });
-                // Regression-test hook: remember the plot card's content and
-                // clip rects so tests can assert the card is not cut off at
-                // the bottom of the central panel.
-                #[cfg(test)]
-                ui.ctx().data_mut(|d| {
-                    d.insert_temp(
-                        egui::Id::new("central_plot_card_rects"),
-                        (ui.min_rect(), ui.clip_rect()),
-                    );
+                        });
+                    });
+                    // Regression-test hook: remember the plot card's content and
+                    // clip rects so tests can assert the card is not cut off at
+                    // the bottom of the central panel.
+                    #[cfg(test)]
+                    ui.ctx().data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new("central_plot_card_rects"),
+                            (ui.min_rect(), ui.clip_rect()),
+                        );
+                    });
                 });
             });
-        });
 
         // ----- Layout editor window -----
         self.layout_window(ctx);
 
-        // ----- Detached population window -----
-        if self.popout.open {
+        // ----- Detached graph windows (V7) -----
+        let mut wi = 0;
+        while wi < self.popouts.len() {
+            let mut st = std::mem::take(&mut self.popouts[wi]);
+            if st.open {
+                self.popout_window(ctx, wi, &mut st);
+            }
+            self.popouts[wi] = st;
+            if !self.popouts[wi].open {
+                self.popouts.remove(wi);
+                if let Some(active) = self.active_popout {
+                    if active == wi {
+                        self.active_popout = None;
+                    } else if active > wi {
+                        self.active_popout = Some(active - 1);
+                    }
+                }
+            } else {
+                wi += 1;
+            }
+        }
+
+        // ----- Compensation editor -----
+        if self.comp_open {
+            enum CompAction {
+                LoadCsv,
+                Spillover,
+                Identity,
+                Invert,
+                AddChannels,
+                ApplyCurrent,
+                ApplyAll,
+                ClearCurrent,
+                ClearAll,
+                ReapplyAcquisition,
+            }
             let p = self.palette();
-            let mut open = self.popout.open;
-            let gate_idx = self.popout.gate;
-            let title = gate_idx
-                .and_then(|i| self.gates.get(i))
-                .map(|g| format!("Population: {}", g.name))
-                .unwrap_or_else(|| "Population".to_string());
-            egui::Window::new(title)
+            let mut open = self.comp_open;
+            let mut action: Option<CompAction> = None;
+            // Temporarily move the draft out so the window closure only needs
+            // an immutable borrow of the rest of the app state.
+            let mut draft = self.comp_draft.take();
+            let current_sample_text = self
+                .current_sample
+                .and_then(|i| self.samples.get(i))
+                .map(|s| {
+                    format!(
+                        "{} ({})",
+                        s.id,
+                        if s.compensation.is_some() {
+                            "compensated"
+                        } else {
+                            "uncompensated"
+                        }
+                    )
+                })
+                .unwrap_or_else(|| "no sample selected".to_string());
+            let sample_status = self
+                .current_fcs()
+                .map(|fcs| (parameter_names(fcs), parameter_descriptions(fcs)));
+
+            egui::Window::new("Compensation")
                 .open(&mut open)
                 .resizable(true)
-                .default_size([760.0, 600.0])
+                .default_size([820.0, 580.0])
                 .show(ctx, |ui| {
-                    card_frame(p).show(ui, |ui| {
-                        let Some(i) = gate_idx else {
-                            ui.label(
-                                egui::RichText::new("Select a gate in the tree.")
-                                    .color(p.muted)
-                                    .small(),
-                            );
-                            return;
-                        };
-                        if self.current_sample.is_none() {
-                            ui.label(
-                                egui::RichText::new("No sample selected.")
-                                    .color(p.muted)
-                                    .small(),
-                            );
-                            return;
-                        }
-
-                        ui.horizontal(|ui| {
-                            if primary_button(ui, p, "Add this plot to layout")
-                                .on_hover_text("Add this detached population view to the Layout Editor")
-                                .clicked()
-                            {
-                                self.add_layout_popout();
-                            }
-                        });
-                        ui.separator();
-
-                        // The detached window exposes the same controls as the main
-                        // window: axes, ranges, scales, colour, view and gating.
-                        self.popout_controls(ui, p, i);
-                        ui.separator();
-
-                        let (Some(x), Some(y)) = (self.popout.x_param, self.popout.y_param) else {
-                            ui.label(
-                                egui::RichText::new("Select X and Y parameters.")
-                                    .color(p.muted)
-                                    .small(),
-                            );
-                            return;
-                        };
-                        let (x_label, y_label) = match self.current_fcs() {
-                            Some(f) => (param_display_name(f, x), param_display_name(f, y)),
-                            None => (String::new(), String::new()),
-                        };
-                        let pts = self.population_points_xy(i, x, y);
-                        let visuals = self.gate_visuals_for(
-                            x,
-                            y,
-                            self.popout.x_range,
-                            self.popout.y_range,
-                            self.popout.selected_gate,
-                        );
-                        let handles = match self.popout.selected_gate {
-                            Some(gi) if self.gates.get(gi).map(|g| (g.x_idx, g.y_idx)) == Some((x, y)) => {
-                                self.gates[gi].kind.handles()
-                            }
-                            _ => Vec::new(),
-                        };
-                        let cfg = PlotCfg {
-                            points: pts,
-                            x_range: self.popout.x_range,
-                            y_range: self.popout.y_range,
-                            x_scale: self.popout.x_scale,
-                            y_scale: self.popout.y_scale,
-                            point_color: self.popout.point_color,
-                            gradient: self.popout.gradient,
-                            view: self.popout.view,
-                            contour_levels: self.popout.contour_levels,
-                            gates: visuals,
-                            handles,
-                            x_label: format!("{x_label} ({})", scale_label(self.popout.x_scale)),
-                            y_label: if matches!(self.popout.view, ViewMode::Histogram) {
-                                "Count".to_string()
-                            } else {
-                                format!("{y_label} ({})", scale_label(self.popout.y_scale))
-                            },
-                            interactive: true,
-                            line_preview: matches!(self.popout.new_gate_type, NewGateType::Bilinear),
-                        };
+                    ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "{} events shown — drag to gate, drag handles to edit",
-                                cfg.points.len()
-                            ))
-                            .small()
-                            .color(p.muted),
+                            egui::RichText::new("Sample:")
+                                .small()
+                                .color(p.muted),
                         );
-
-                        let mut inter = PlotInteraction {
-                            drag_start: self.popout.interact.drag_start,
-                            drag_current: self.popout.interact.drag_current,
-                            ..Default::default()
-                        };
-                        show_plot(ui, "popout_plot", &cfg, &mut inter);
-
-                        let tol = 0.02
-                            * (self.popout.x_range.1 - self.popout.x_range.0)
-                                .abs()
-                                .max((self.popout.y_range.1 - self.popout.y_range.0).abs())
-                                .max(1.0);
-                        let outcome = drive_interact(
-                            &mut self.popout.interact,
-                            &inter,
-                            &self.gates,
-                            self.popout.selected_gate,
-                            self.popout.new_gate_type,
-                            tol,
-                        );
-                        if let Some(outcome) = outcome {
-                            match outcome {
-                                InteractOutcome::Create { start, end } => {
-                                    let created = self.create_gates(
-                                        start,
-                                        end,
-                                        x,
-                                        y,
-                                        self.popout.gate,
-                                        self.popout.new_gate_type,
-                                    );
-                                    if let Some(&last) = created.last() {
-                                        self.popout.selected_gate = Some(last);
-                                    }
-                                }
-                                InteractOutcome::Update { gate, kind } => {
-                                    let old = self.gates.get(gate).map(|g| g.kind.clone());
-                                    if gate < self.gates.len() {
-                                        self.gates[gate].kind = kind;
-                                    }
-                                    if let Some(old) = old {
-                                        let new_kind = self.gates.get(gate).map(|g| g.kind.clone());
-                                        if let Some(new_kind) = new_kind {
-                                            self.commit_gate_edit(gate, &old, &new_kind);
-                                        }
-                                    }
-                                    self.recompute_populations();
-                                }
-                                InteractOutcome::Click(p) => self.create_click_gate(p, true),
-                            }
+                        ui.label(egui::RichText::new(&current_sample_text).small());
+                        if let (Some(matrix), Some((names, descriptions))) =
+                            (draft.as_ref(), sample_status.as_ref())
+                        {
+                            ui.separator();
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} / {} matrix channels match",
+                                    matrix.matched_count(names, descriptions),
+                                    matrix.channels.len()
+                                ))
+                                .small()
+                                .color(p.muted),
+                            );
                         }
                     });
+                    ui.add_space(4.0);
+                    ui.horizontal_wrapped(|ui| {
+                        if secondary_button(ui, p, "Load matrix CSV…").clicked() {
+                            action = Some(CompAction::LoadCsv);
+                        }
+                        if secondary_button(ui, p, "Use $SPILLOVER")
+                            .on_hover_text("Load the acquisition spillover matrix from the FCS file")
+                            .clicked()
+                        {
+                            action = Some(CompAction::Spillover);
+                        }
+                        if secondary_button(ui, p, "New identity").clicked() {
+                            action = Some(CompAction::Identity);
+                        }
+                        if secondary_button(ui, p, "Invert")
+                            .on_hover_text("Invert the matrix (spillover → compensation)")
+                            .clicked()
+                        {
+                            action = Some(CompAction::Invert);
+                        }
+                        if secondary_button(ui, p, "Add all sample channels").clicked() {
+                            action = Some(CompAction::AddChannels);
+                        }
+                    });
+                    ui.separator();
+
+                    match &mut draft {
+                        Some(matrix) => {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Rows = source channel, columns = corrected channel. Values are applied as data × matrix.",
+                                )
+                                .small()
+                                .color(p.muted),
+                            );
+                            ui.add_space(4.0);
+                            egui::ScrollArea::both()
+                                .max_height(320.0)
+                                .show(ui, |ui| {
+                                    egui::Grid::new("compensation_matrix_grid")
+                                        .striped(true)
+                                        .spacing([6.0, 3.0])
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                egui::RichText::new("channel")
+                                                    .small()
+                                                    .strong(),
+                                            );
+                                            for channel in &matrix.channels {
+                                                ui.label(
+                                                    egui::RichText::new(channel)
+                                                        .small()
+                                                        .strong(),
+                                                )
+                                                .on_hover_text(channel);
+                                            }
+                                            ui.end_row();
+                                            for i in 0..matrix.channels.len() {
+                                                ui.label(
+                                                    egui::RichText::new(
+                                                        &matrix.channels[i],
+                                                    )
+                                                    .small(),
+                                                )
+                                                .on_hover_text(&matrix.channels[i]);
+                                                for j in 0..matrix.channels.len() {
+                                                    if let Some(value) =
+                                                        matrix.values.get_mut(i).and_then(|r| r.get_mut(j))
+                                                    {
+                                                        ui.add(
+                                                            egui::DragValue::new(value)
+                                                                .speed(0.01)
+                                                                .max_decimals(4),
+                                                        );
+                                                    }
+                                                }
+                                                ui.end_row();
+                                            }
+                                        });
+                                });
+                        }
+                        None => {
+                            ui.add_space(8.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "No matrix loaded. Load a CSV, use the file's $SPILLOVER, or create an identity matrix.",
+                                )
+                                .color(p.muted),
+                            );
+                            ui.add_space(8.0);
+                        }
+                    }
+
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        if primary_button(ui, p, "Apply to current").clicked() {
+                            action = Some(CompAction::ApplyCurrent);
+                        }
+                        if primary_button(ui, p, "Apply to all samples").clicked() {
+                            action = Some(CompAction::ApplyAll);
+                        }
+                        ui.add_space(8.0);
+                        if secondary_button(ui, p, "Reapply acquisition matrix").clicked() {
+                            action = Some(CompAction::ReapplyAcquisition);
+                        }
+                        if secondary_button(ui, p, "Remove current").clicked() {
+                            action = Some(CompAction::ClearCurrent);
+                        }
+                        if secondary_button(ui, p, "Remove all").clicked() {
+                            action = Some(CompAction::ClearAll);
+                        }
+                        if secondary_button(ui, p, "Toggle node visibility").clicked() {
+                            self.toggle_compensation_node();
+                        }
+                    });
+                    if !self.comp_message.is_empty() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(&self.comp_message)
+                                .small()
+                                .color(p.muted),
+                        );
+                    }
                 });
-            self.popout.open = open;
+
+            self.comp_open = open;
+            self.comp_draft = draft;
+
+            match action {
+                Some(CompAction::LoadCsv) => {
+                    if let Some(path) = rfd::FileDialog::new()
+                        .add_filter("Compensation matrix", &["csv", "tsv", "txt"])
+                        .pick_file()
+                    {
+                        match std::fs::read_to_string(&path) {
+                            Ok(text) => match CompensationMatrix::from_csv(&text) {
+                                Ok(matrix) => {
+                                    self.comp_message = format!(
+                                        "Loaded {} ({} × {} channels) from {}.",
+                                        matrix.channels.len(),
+                                        matrix.channels.len(),
+                                        matrix.values.len(),
+                                        path.display()
+                                    );
+                                    self.comp_draft = Some(matrix);
+                                }
+                                Err(e) => {
+                                    self.comp_message = format!("Could not parse matrix: {e}")
+                                }
+                            },
+                            Err(e) => {
+                                self.comp_message = format!("Could not read matrix file: {e}")
+                            }
+                        }
+                    }
+                }
+                Some(CompAction::Spillover) => self.load_acquisition_matrix(),
+                Some(CompAction::Identity) => self.comp_identity(),
+                Some(CompAction::Invert) => {
+                    if let Some(matrix) = self.comp_draft.take() {
+                        match matrix.inverted() {
+                            Ok(inverted) => {
+                                self.comp_draft = Some(inverted);
+                                self.comp_message = "Matrix inverted.".to_string();
+                            }
+                            Err(e) => {
+                                self.comp_draft = Some(matrix);
+                                self.comp_message = format!("Could not invert: {e}");
+                            }
+                        }
+                    }
+                }
+                Some(CompAction::AddChannels) => self.comp_add_missing_channels(),
+                Some(CompAction::ApplyCurrent) => self.apply_compensation(false),
+                Some(CompAction::ApplyAll) => self.apply_compensation(true),
+                Some(CompAction::ClearCurrent) => self.clear_compensation(false),
+                Some(CompAction::ClearAll) => self.clear_compensation(true),
+                Some(CompAction::ReapplyAcquisition) => {
+                    let matrix = self.current_fcs().and_then(acquisition_compensation);
+                    if let Some(matrix) = matrix {
+                        self.comp_draft = Some(matrix.clone());
+                        self.apply_compensation(false);
+                    } else {
+                        self.comp_message =
+                            "This sample has no usable $SPILLOVER keyword.".to_string();
+                    }
+                }
+                None => {}
+            }
         }
 
         // ----- "Apply existing gates to this file?" prompt -----
@@ -6190,12 +9519,7 @@ mod tests {
 
     #[test]
     fn nested_gate_population_reports_parent_and_total_percentages() {
-        let data = array![
-            [0.0_f32, 0.0],
-            [1.0, 1.0],
-            [2.0, 2.0],
-            [10.0, 10.0],
-        ];
+        let data = array![[0.0_f32, 0.0], [1.0, 1.0], [2.0, 2.0], [10.0, 10.0],];
         let rect = |min, max| GateKind::Rect {
             x_min: min,
             x_max: max,
@@ -6271,6 +9595,464 @@ mod tests {
             let back: f64 = s.parse().unwrap_or_else(|_| panic!("{s} did not parse"));
             assert_eq!(back, v, "{v} -> {s} -> {back}");
         }
+    }
+
+    #[test]
+    fn zoom_axis_range_keeps_the_center_and_respects_log_axes() {
+        let mut linear = (0.0, 10.0);
+        zoom_axis_range(&mut linear, &AxisScale::Linear, 0.5);
+        assert!((linear.0 - 2.5).abs() < 1e-9);
+        assert!((linear.1 - 7.5).abs() < 1e-9);
+
+        // Zooming out by the reciprocal restores the original range.
+        zoom_axis_range(&mut linear, &AxisScale::Linear, 2.0);
+        assert!((linear.0 - 0.0).abs() < 1e-9);
+        assert!((linear.1 - 10.0).abs() < 1e-9);
+
+        // On a log axis the centre is the geometric mean, so a 0.5 zoom of
+        // 1..100 stays centred on 10.
+        let mut log = (1.0, 100.0);
+        zoom_axis_range(&mut log, &AxisScale::Log, 0.5);
+        assert!((log.0 - 10f64.powf(0.5)).abs() < 1e-9);
+        assert!((log.1 - 10f64.powf(1.5)).abs() < 1e-9);
+        assert!((log.0 * log.1 - 100.0).abs() < 1e-6);
+
+        // Degenerate input must leave the range untouched.
+        let mut unchanged = (0.0, 0.0);
+        zoom_axis_range(&mut unchanged, &AxisScale::Linear, 0.0);
+        assert_eq!(unchanged, (0.0, 0.0));
+        let mut non_finite = (f64::NAN, 1.0);
+        zoom_axis_range(&mut non_finite, &AxisScale::Linear, 0.5);
+        assert!(non_finite.0.is_nan());
+        assert_eq!(non_finite.1, 1.0);
+    }
+
+    #[test]
+    fn gate_at_finds_any_gate_body_and_prefers_the_selection() {
+        let rect = |min: f64, max: f64| GateKind::Rect {
+            x_min: min,
+            x_max: max,
+            y_min: min,
+            y_max: max,
+            angle: 0.0,
+        };
+        let gate = |name: &str, kind: GateKind| GateDef {
+            name: name.into(),
+            x_idx: 0,
+            y_idx: 1,
+            parent: None,
+            kind,
+            color: egui::Color32::WHITE,
+            owner: None,
+            apply_to_all: true,
+        };
+        let gates = vec![
+            gate("wide", rect(-1.0, 11.0)),
+            gate("small", rect(4.0, 6.0)),
+            gate(
+                "ellipse",
+                GateKind::Ellipse {
+                    x_min: 20.0,
+                    x_max: 30.0,
+                    y_min: 20.0,
+                    y_max: 30.0,
+                    angle: 0.0,
+                },
+            ),
+        ];
+
+        // Without a selection the topmost (last-drawn) body wins.
+        assert_eq!(gate_at(&gates, [5.0, 5.0], None), Some(1));
+        // Clicking the selected gate keeps it selected even when another body
+        // overlaps it.
+        assert_eq!(gate_at(&gates, [5.0, 5.0], Some(0)), Some(0));
+        assert_eq!(gate_at(&gates, [5.0, 5.0], Some(1)), Some(1));
+        // Empty space is not a gate body.
+        assert_eq!(gate_at(&gates, [50.0, 50.0], None), None);
+        // Ellipse bodies are hit-tested as ellipses, not bounding boxes.
+        assert_eq!(gate_at(&gates, [25.0, 25.0], None), Some(2));
+        assert_eq!(gate_at(&gates, [20.1, 20.1], None), None);
+    }
+
+    #[test]
+    fn compensation_can_be_applied_and_removed_without_losing_raw_data() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("compensation_apply.fcs");
+        write_fcs(&fcs_path, 4, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+        assert_eq!(app.samples.len(), 1);
+        let raw = app.samples[0].raw_data.clone();
+        assert_eq!(app.samples[0].fcs.data, raw);
+
+        let matrix = CompensationMatrix::new(
+            vec!["P1".into(), "P2".into()],
+            vec![vec![1.0, 0.5], vec![0.0, 1.0]],
+        )
+        .unwrap();
+        app.comp_draft = Some(matrix.clone());
+        app.apply_compensation(false);
+
+        // P2 = 0.5 * P1 + P2 for each event, and the raw data is retained.
+        assert_eq!(app.samples[0].compensation.as_ref(), Some(&matrix));
+        assert_eq!(app.samples[0].raw_data, raw);
+        assert_eq!(app.samples[0].fcs.data[[3, 0]], 3.0);
+        assert_eq!(app.samples[0].fcs.data[[3, 1]], 4.5);
+        assert!(app.dirty);
+
+        app.clear_compensation(false);
+        assert!(app.samples[0].compensation.is_none());
+        assert_eq!(app.samples[0].fcs.data, raw);
+    }
+
+    #[test]
+    fn compensation_node_visibility_toggles_and_reports_status() {
+        let mut app = FlowersApp::default();
+        assert!(app.comp_node_visible);
+        assert_eq!(
+            app.compensation_node_status(),
+            "Compensation node idle (no matrix applied)."
+        );
+        app.toggle_compensation_node();
+        assert!(!app.comp_node_visible);
+        assert_eq!(app.compensation_node_status(), "Compensation node hidden.");
+        app.toggle_compensation_node();
+        assert!(app.comp_node_visible);
+        assert_eq!(
+            app.compensation_node_status(),
+            "Compensation node idle (no matrix applied)."
+        );
+    }
+
+    #[test]
+    fn magnetic_snapping_pulls_drawing_points_toward_events() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("magnetic_snap.fcs");
+        // Events lie on the diagonal: (0,0), (1,1), ..., (11,11).
+        write_fcs(&fcs_path, 12, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+        app.magnetic_radius_frac = 0.5;
+        app.magnetic_strength = 1.0;
+
+        // Disabled snapping leaves the pointer exactly where it was.
+        app.magnetic_snap = false;
+        let point = [4.2, 1.0];
+        assert_eq!(app.snap_drawing_point(point, 0, 1, 10.0), point);
+
+        // Enabled snapping pulls the off-diagonal point toward the events.
+        app.magnetic_snap = true;
+        let snapped = app.snap_drawing_point(point, 0, 1, 10.0);
+        assert!(
+            snapped[1] > point[1],
+            "expected y to move toward the diagonal: {snapped:?}"
+        );
+        assert!((snapped[1] - snapped[0]).abs() < (point[1] - point[0]).abs());
+
+        // Zero strength is the same as disabled.
+        app.magnetic_strength = 0.0;
+        assert_eq!(app.snap_drawing_point(point, 0, 1, 10.0), point);
+
+        // A gate created while snapping is enabled is still valid.
+        app.magnetic_strength = 1.0;
+        app.x_param = Some(0);
+        app.y_param = Some(1);
+        let created = app.create_gates([4.2, 1.0], [8.2, 5.0], 0, 1, None, NewGateType::Rect, 10.0);
+        assert_eq!(created.len(), 1);
+        assert!(matches!(app.gates[created[0]].kind, GateKind::Rect { .. }));
+    }
+
+    #[test]
+    fn autorange_rule_overrides_autofit_bounds() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("autorange.fcs");
+        write_fcs(&fcs_path, 12, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+        app.x_param = Some(0);
+        app.y_param = Some(1);
+        app.plot_points = (0..12).map(|i| [i as f64, i as f64]).collect();
+
+        // Without a rule the auto-fit uses the data-driven bounds.
+        let values: Vec<f64> = app.plot_points.iter().map(|p| p[0]).collect();
+        let auto = app
+            .autorange_bounds(&values, 0)
+            .unwrap_or_else(|| bounds_for(&values, &app.x_scale));
+        assert!(auto.0 < auto.1, "auto bounds: {auto:?}");
+
+        // A name-matched FSC rule with explicit min/max overrides the auto-fit.
+        app.autorange_rules.push(AutorangeRule {
+            id: "ar1".to_string(),
+            name: "FSC autorange".to_string(),
+            priority: 0,
+            enabled: true,
+            matcher: crate::transform::AutorangeMatcher::Name("P1*".to_string()),
+            limit: crate::transform::AutorangeLimit::MinMax {
+                min: 0.0,
+                max: 10.0,
+            },
+        });
+        assert_eq!(app.autorange_bounds(&values, 0), Some((0.0, 10.0)));
+
+        // Disabled rules are ignored.
+        app.autorange_rules[0].enabled = false;
+        assert!(app.autorange_bounds(&values, 0).is_none());
+    }
+
+    #[test]
+    fn statistics_panel_set_crud_and_open_close() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("stats_panel.fcs");
+        write_fcs(&fcs_path, 12, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+
+        // Panel starts closed and toggling through the public methods works.
+        assert!(!app.stats_panel_open);
+        app.open_stats_panel();
+        assert!(app.stats_panel_open);
+        app.stats_panel_open = false;
+        assert!(!app.stats_panel_open);
+
+        // With an empty registry the add/copy actions are no-ops.
+        app.stats_panel_open = true;
+        app.stats_panel_add_set(0);
+        app.stats_panel_copy_set(0);
+        assert!(app.statistic_sets.is_empty());
+        app.stats_panel_open = false;
+        app.stats_panel_remove_set(0);
+
+        // Add a set, copy it (two entries), then remove one.
+        app.statistic_sets
+            .push(crate::statistics::StatisticSet::new(
+                "Main",
+                vec![crate::statistics::StatSpec {
+                    parameter: Some("P1".to_string()),
+                    statistic: crate::statistics::Statistic::Mean,
+                    expected: None,
+                    heat: None,
+                }],
+            ));
+        app.stats_panel_open = true;
+        app.stats_panel_add_set(0);
+        assert_eq!(app.statistic_sets.len(), 2);
+        app.stats_panel_remove_set(0);
+        assert_eq!(app.statistic_sets.len(), 1);
+    }
+
+    #[test]
+    fn statistics_panel_rows_are_empty_without_a_population() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("stats_panel2.fcs");
+        write_fcs(&fcs_path, 12, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+        // No population selected and no cached events yet.
+        assert!(app.stats_panel_rows().is_empty());
+    }
+
+    #[test]
+    fn gate_copy_paste_and_duplicate_preserve_parent() {
+        let mut app = FlowersApp::default();
+        let parent = app.push_gate(
+            "Parent".into(),
+            GateKind::Rect {
+                x_min: 0.0,
+                x_max: 4.0,
+                y_min: 0.0,
+                y_max: 4.0,
+                angle: 0.0,
+            },
+            None,
+            0,
+            1,
+        );
+        let child = app.push_gate(
+            "Child".into(),
+            GateKind::Ellipse {
+                x_min: 1.0,
+                x_max: 3.0,
+                y_min: 1.0,
+                y_max: 3.0,
+                angle: 0.0,
+            },
+            Some(parent),
+            0,
+            1,
+        );
+
+        // Copy serializes the geometry; paste recreates it as a sibling.
+        let json = app.copy_gate(child).unwrap();
+        assert!(json.contains("ellipse"), "clipboard JSON: {json}");
+        let pasted = app.paste_gate().unwrap();
+        assert_eq!(app.gates[pasted].parent, Some(parent));
+        assert_eq!(app.gates[pasted].name, "Child");
+        assert_eq!(app.gates[pasted].kind, app.gates[child].kind);
+
+        // Duplicate keeps the parent and gets a unique sibling name.
+        let duplicate = app.duplicate_gate(child).unwrap();
+        assert_eq!(app.gates[duplicate].parent, Some(parent));
+        assert_eq!(app.gates[duplicate].name, "Child copy");
+        assert_eq!(app.gates[duplicate].owner, app.gates[child].owner);
+        assert_eq!(app.gates[duplicate].kind, app.gates[child].kind);
+        let second = app.duplicate_gate(child).unwrap();
+        assert_eq!(app.gates[second].name, "Child copy 2");
+
+        // An empty or malformed clipboard cannot paste.
+        app.gate_clipboard = None;
+        assert!(app.paste_gate().is_none());
+        app.gate_clipboard = Some("not json".to_string());
+        assert!(app.paste_gate().is_none());
+    }
+
+    #[test]
+    fn sync_named_gates_updates_only_matching_parameter_pairs() {
+        let rect = |x_min: f64, x_max: f64| GateKind::Rect {
+            x_min,
+            x_max,
+            y_min: 0.0,
+            y_max: 4.0,
+            angle: 0.0,
+        };
+        let mut app = FlowersApp::default();
+        let source = app.push_gate("CD4".into(), rect(0.0, 4.0), None, 0, 1);
+        let same_name = app.push_gate("CD4".into(), rect(1.0, 9.0), None, 0, 1);
+        let other_pair = app.push_gate("CD4".into(), rect(1.0, 9.0), None, 1, 2);
+        let other_name = app.push_gate("CD8".into(), rect(1.0, 9.0), None, 0, 1);
+
+        let changed = app.sync_named_gates(source);
+        assert_eq!(changed, 1);
+        assert_eq!(app.gates[same_name].kind, app.gates[source].kind);
+        assert_ne!(app.gates[other_pair].kind, app.gates[source].kind);
+        assert_ne!(app.gates[other_name].kind, app.gates[source].kind);
+
+        // Synchronising again is a no-op.
+        assert_eq!(app.sync_named_gates(source), 0);
+    }
+
+    #[test]
+    fn gate_labels_and_backgating_follow_the_population_tree() {
+        let mut app = FlowersApp::default();
+        let parent = app.push_gate(
+            "Lymph".into(),
+            GateKind::Rect {
+                x_min: 0.0,
+                x_max: 8.0,
+                y_min: 0.0,
+                y_max: 8.0,
+                angle: 0.0,
+            },
+            None,
+            0,
+            1,
+        );
+        let child = app.push_gate(
+            "CD4+".into(),
+            GateKind::Rect {
+                x_min: 1.0,
+                x_max: 4.0,
+                y_min: 1.0,
+                y_max: 4.0,
+                angle: 0.0,
+            },
+            Some(parent),
+            0,
+            1,
+        );
+        assert!(child > parent);
+        // Simulate cached populations: 10 events in the parent, 4 in the child.
+        app.pop_indices = vec![(0..10).collect(), (0..4).collect()];
+
+        // Labels on by default: name and count, no ancestry unless enabled.
+        let visuals = app.gate_visuals_for(0, 1, (0.0, 10.0), (0.0, 10.0), Some(child));
+        assert_eq!(visuals.len(), 2);
+        let child_visual = &visuals[child];
+        let (text, position) = child_visual.label.as_ref().expect("child label");
+        assert!(text.contains("CD4+"));
+        assert!(text.contains("n=4"));
+        assert!(!text.contains("Lymph"));
+        assert!(position[0].is_finite() && position[1].is_finite());
+        assert!(!child_visual.backgate);
+
+        // Enabling ancestry and backgating adds the path and marks the parent.
+        app.gate_labels.ancestry = true;
+        app.gate_labels.backgating = true;
+        let visuals = app.gate_visuals_for(0, 1, (0.0, 10.0), (0.0, 10.0), Some(child));
+        let text = &visuals[child].label.as_ref().unwrap().0;
+        assert!(text.contains("Lymph / CD4+"));
+        assert!(visuals[parent].backgate);
+        assert!(!visuals[child].backgate);
+
+        // Hiding labels removes them all.
+        app.gate_labels.show = false;
+        let visuals = app.gate_visuals_for(0, 1, (0.0, 10.0), (0.0, 10.0), Some(child));
+        assert!(visuals.iter().all(|g| g.label.is_none()));
+    }
+
+    #[test]
+    fn convert_gate_changes_kind_and_geometry() {
+        let mut app = FlowersApp::default();
+        app.push_gate(
+            "G".into(),
+            GateKind::Rect {
+                x_min: 0.0,
+                x_max: 4.0,
+                y_min: 2.0,
+                y_max: 6.0,
+                angle: 0.0,
+            },
+            None,
+            0,
+            1,
+        );
+
+        app.convert_gate(0, crate::gating::GateShape::Ellipse);
+        match &app.gates[0].kind {
+            GateKind::Ellipse {
+                x_min,
+                x_max,
+                y_min,
+                y_max,
+                ..
+            } => {
+                assert!((x_min - 0.0).abs() < 1e-6);
+                assert!((x_max - 4.0).abs() < 1e-6);
+                assert!((y_min - 2.0).abs() < 1e-6);
+                assert!((y_max - 6.0).abs() < 1e-6);
+            }
+            other => panic!("expected ellipse, got {other:?}"),
+        }
+
+        app.convert_gate(0, crate::gating::GateShape::Polygon);
+        match &app.gates[0].kind {
+            GateKind::Polygon { vertices } => assert_eq!(vertices.len(), 64),
+            other => panic!("expected polygon, got {other:?}"),
+        }
+
+        // Quadrant gates cannot be converted and stay unchanged.
+        app.push_gate(
+            "Q".into(),
+            GateKind::Quadrant {
+                x: 5.0,
+                y: 5.0,
+                quad: Quadrant::UpperLeft,
+            },
+            None,
+            0,
+            1,
+        );
+        app.convert_gate(1, crate::gating::GateShape::Rectangle);
+        assert!(matches!(app.gates[1].kind, GateKind::Quadrant { .. }));
     }
 
     #[test]
@@ -6441,9 +10223,11 @@ mod tests {
         app.load_file(&fcs_path);
 
         let ctx = egui::Context::default();
-        let screen =
-            egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
-        let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let raw = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
         // Run a few frames so the resizable bottom panel settles on its
         // content height before checking the central plot card.
         for _ in 0..3 {
@@ -6452,9 +10236,7 @@ mod tests {
 
         let (content, clip) = ctx
             .data(|d| {
-                d.get_temp::<(egui::Rect, egui::Rect)>(egui::Id::new(
-                    "central_plot_card_rects",
-                ))
+                d.get_temp::<(egui::Rect, egui::Rect)>(egui::Id::new("central_plot_card_rects"))
             })
             .expect("plot card layout should be recorded");
         assert!(
@@ -6495,11 +10277,39 @@ mod tests {
         app.selected_gate = Some(0);
         app.view_mode = ViewMode::Contour;
         app.contour_levels = 6;
-        app.x_range = (1.0, 3.0);
-        app.y_range = (2.0, 4.0);
+        app.density_map = crate::plot::DensityMap::Zebra;
+        app.overlay_populations = true;
+        app.transpose = true;
+        app.plot_smoothing = 0.5;
+        app.plot_resolution = 256;
+        app.outlier_clip_percent = 5.0;
+        app.large_dots = true;
+        app.show_grid = true;
+        app.show_medians = true;
+        app.show_event_numbers = true;
+        app.show_names_frequencies = true;
+        app.show_axis_histograms = true;
+        app.tick_notation = crate::plot::TickNotation::Scientific;
+        app.show_axis_labels = false;
+        app.show_ticks = false;
+        app.show_numbers = false;
         app.layout_columns = 3;
         app.add_layout_current();
         assert_eq!(app.layout_panels.len(), 1);
+
+        let matrix = CompensationMatrix::new(
+            vec!["P1".into(), "P2".into()],
+            vec![vec![1.0, 0.25], vec![0.0, 1.0]],
+        )
+        .unwrap();
+        app.comp_draft = Some(matrix.clone());
+        app.apply_compensation(false);
+        assert_eq!(app.samples[0].compensation.as_ref(), Some(&matrix));
+
+        // Set the manual ranges after compensation: applying a matrix refreshes
+        // the plot points and may auto-fit the axes.
+        app.x_range = (1.0, 3.0);
+        app.y_range = (2.0, 4.0);
 
         let wsp = dir.join("ws_roundtrip.wsp");
         app.save_workspace(&wsp);
@@ -6525,11 +10335,308 @@ mod tests {
         assert_eq!(app2.selected_gate, Some(0));
         assert_eq!(app2.view_mode, ViewMode::Contour);
         assert_eq!(app2.contour_levels, 6);
+        assert_eq!(app2.density_map, crate::plot::DensityMap::Zebra);
+        assert!(app2.overlay_populations);
+        assert!(app2.transpose);
+        assert_eq!(app2.plot_smoothing, 0.5);
+        assert_eq!(app2.plot_resolution, 256);
+        assert_eq!(app2.outlier_clip_percent, 5.0);
+        assert!(app2.large_dots);
+        assert!(app2.show_grid);
+        assert!(app2.show_medians);
+        assert!(app2.show_event_numbers);
+        assert!(app2.show_names_frequencies);
+        assert!(app2.show_axis_histograms);
+        assert_eq!(app2.tick_notation, crate::plot::TickNotation::Scientific);
+        assert!(!app2.show_axis_labels);
+        assert!(!app2.show_ticks);
+        assert!(!app2.show_numbers);
         assert_eq!(app2.x_range, (1.0, 3.0));
         assert_eq!(app2.y_range, (2.0, 4.0));
         assert_eq!(app2.layout_columns, 3);
         assert_eq!(app2.layout_panels.len(), 1);
         assert_eq!(app2.layout_panels[0].sample, 0);
+        // Compensation is saved with the workspace and reapplied to the raw
+        // data when the workspace is opened again.
+        assert_eq!(app2.samples[0].compensation.as_ref(), Some(&matrix));
+        assert_ne!(app2.samples[0].fcs.data, app2.samples[0].raw_data);
+    }
+
+    #[test]
+    fn pseudocolor_export_uses_the_selected_density_map() {
+        let mut fcs = fcs_with(&["P1", "P2"]);
+        fcs.event_count = 4;
+        fcs.data = array![[1.0, 1.0], [2.0, 2.0], [3.0, 3.0], [4.0, 4.0]];
+        let mut app = FlowersApp::default();
+        app.samples.push(SampleEntry {
+            id: "density.fcs".to_string(),
+            path: std::path::PathBuf::from("/tmp/opencode/density.fcs"),
+            raw_data: fcs.data.clone(),
+            fcs,
+            compensation: None,
+            apply_gates: true,
+        });
+        app.current_sample = Some(0);
+        app.x_param = Some(0);
+        app.y_param = Some(1);
+        app.x_range = (0.0, 5.0);
+        app.y_range = (0.0, 5.0);
+
+        // Dot mode has no density legend.
+        let (dot_svg, _, _) = app.current_plot_svg().unwrap();
+        assert!(!dot_svg.contains("linearGradient"));
+
+        // Pseudocolour mode embeds the map legend and zebra-coloured points.
+        app.view_mode = ViewMode::Pseudocolor;
+        app.density_map = crate::plot::DensityMap::Zebra;
+        let (svg, _, _) = app.current_plot_svg().unwrap();
+        assert!(svg.contains("linearGradient"));
+        assert!(svg.contains("#d9d9d9") || svg.contains("#262626"));
+
+        // Unknown persisted ids fall back to the rainbow map.
+        let mut project = app.to_project();
+        project.view.density_map = "not-a-map".to_string();
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let path = dir.join("density_fallback.wsp");
+        let json = serde_json::to_string_pretty(&project).unwrap();
+        std::fs::write(&path, json).unwrap();
+        app.load_workspace(&path);
+        assert_eq!(app.density_map, crate::plot::DensityMap::Rainbow);
+    }
+
+    /// Builds an app with one synthetic 3-parameter sample and no gates.
+    fn app_with_synthetic_sample() -> FlowersApp {
+        let names = ["P1", "P2", "P3"];
+        let mut fcs = fcs_with(&names);
+        fcs.event_count = 4;
+        fcs.data = array![
+            [1.0, 4.0, 7.0],
+            [2.0, 5.0, 8.0],
+            [3.0, 6.0, 9.0],
+            [4.0, 7.0, 10.0]
+        ];
+        let mut app = FlowersApp::default();
+        app.samples.push(SampleEntry {
+            id: "multi.fcs".to_string(),
+            path: std::path::PathBuf::from("/tmp/opencode/multi.fcs"),
+            raw_data: fcs.data.clone(),
+            fcs,
+            compensation: None,
+            apply_gates: true,
+        });
+        app.current_sample = Some(0);
+        app.x_param = Some(0);
+        app.y_param = Some(1);
+        app
+    }
+
+    #[test]
+    fn data_overlays_follow_switch_selection_and_parameter_pair() {
+        let mut app = app_with_synthetic_sample();
+        let all = GateKind::Rect {
+            x_min: 0.0,
+            x_max: 20.0,
+            y_min: 0.0,
+            y_max: 20.0,
+            angle: 0.0,
+        };
+        app.push_gate("G1".into(), all.clone(), None, 0, 1);
+        app.push_gate("G2".into(), all.clone(), None, 0, 1);
+        // A gate on another parameter pair must not appear as an overlay.
+        app.push_gate("Other".into(), all, None, 0, 2);
+        app.recompute_populations();
+        app.selected_gate = Some(0);
+
+        app.overlay_populations = false;
+        assert!(app.data_overlays_for_plot().is_empty());
+
+        app.overlay_populations = true;
+        let overlays = app.data_overlays_for_plot();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].label, "G2");
+        assert_eq!(overlays[0].kind, crate::plot::OverlayKind::Dots);
+        assert_eq!(overlays[0].points.len(), 4);
+    }
+
+    #[test]
+    fn multigraph_sheet_renders_every_parameter() {
+        let app = app_with_synthetic_sample();
+        let (svg, w, h) = app
+            .multigraph_svg_for(crate::plot::MultigraphMode::AllByX, 3)
+            .unwrap();
+        assert_eq!(w, 3 * 280 + 4 * 8);
+        assert_eq!(h, 220 + 2 * 8);
+        assert_eq!(svg.matches("<g transform=\"translate(").count(), 3);
+
+        let (nxn, _, _) = app
+            .multigraph_svg_for(crate::plot::MultigraphMode::NxN, 2)
+            .unwrap();
+        assert_eq!(nxn.matches("<g transform=\"translate(").count(), 6);
+    }
+
+    #[test]
+    fn backgate_residual_events_exclude_the_selected_gate() {
+        let mut app = app_with_synthetic_sample();
+        app.push_gate(
+            "G1".into(),
+            GateKind::Rect {
+                x_min: 1.0,
+                x_max: 2.0,
+                y_min: 0.0,
+                y_max: 100.0,
+                angle: 0.0,
+            },
+            None,
+            0,
+            1,
+        );
+        app.recompute_populations();
+        app.selected_gate = Some(0);
+        app.overlay_populations = false;
+        app.gate_labels.backgate_events = true;
+
+        let overlays = app.data_overlays_for_plot();
+        assert_eq!(overlays.len(), 1);
+        assert_eq!(overlays[0].label, "Excluded by G1");
+        // Two of the four events are inside the gate; two are residual.
+        assert_eq!(overlays[0].points.len(), 2);
+        assert!(overlays[0].points.iter().all(|p| p[0] > 2.0));
+
+        // Turning the switch off removes the residual layer.
+        app.gate_labels.backgate_events = false;
+        assert!(app.data_overlays_for_plot().is_empty());
+    }
+
+    #[test]
+    fn graph_controls_transpose_points_gates_and_axes() {
+        let mut app = app_with_synthetic_sample();
+        app.update_plot_points();
+        app.push_gate(
+            "G".into(),
+            GateKind::Rect {
+                x_min: 1.0,
+                x_max: 2.0,
+                y_min: 1.0,
+                y_max: 3.0,
+                angle: 0.0,
+            },
+            None,
+            0,
+            1,
+        );
+        app.recompute_populations();
+        let before = app.main_plot_cfg();
+        let original_fill = before.gates[0].fill.clone();
+        assert_eq!(before.points[0], [1.0, 4.0]);
+
+        app.x_scale = AxisScale::Linear;
+        app.y_scale = AxisScale::Arcsinh { cofactor: 150.0 };
+        app.x_range = (1.0, 2.0);
+        app.y_range = (3.0, 4.0);
+        app.transpose = true;
+        let cfg = app.main_plot_cfg();
+
+        // Axes, ranges, scales and points are swapped for presentation.
+        assert_eq!(cfg.x_range, (3.0, 4.0));
+        assert_eq!(cfg.y_range, (1.0, 2.0));
+        assert!(matches!(cfg.x_scale, AxisScale::Arcsinh { .. }));
+        assert_eq!(cfg.y_scale, AxisScale::Linear);
+        assert_eq!(cfg.points[0], [4.0, 1.0]);
+        assert!(cfg.transposed);
+        assert!(!cfg.interactive);
+        assert!(cfg.handles.is_empty());
+        // Gate geometry keeps matching the swapped event coordinates.
+        assert_eq!(
+            cfg.gates[0].fill[0],
+            [original_fill[0][1], original_fill[0][0]]
+        );
+    }
+
+    #[test]
+    fn graph_controls_apply_to_svg_export() {
+        let mut app = app_with_synthetic_sample();
+        app.update_plot_points();
+        app.x_range = (0.0, 5.0);
+        app.y_range = (0.0, 11.0);
+        app.x_data_range = (0.0, 5.0);
+        app.y_data_range = (0.0, 11.0);
+        app.show_grid = true;
+        app.show_medians = true;
+        app.show_event_numbers = true;
+        app.large_dots = true;
+        app.tick_notation = crate::plot::TickNotation::Scientific;
+        app.show_axis_labels = false;
+        app.show_ticks = false;
+        app.show_numbers = false;
+
+        let (svg, _, _) = app.current_plot_svg().unwrap();
+        assert!(
+            svg.contains("#e2e8f0"),
+            "background grid should be exported"
+        );
+        assert!(
+            svg.contains("stroke-dasharray=\"5 4\""),
+            "median lines should be exported"
+        );
+        assert!(svg.contains("n = 4"), "event count should be exported");
+        assert!(svg.contains("r=\"4\""), "large dots should be exported");
+        // Tick numbers are hidden, so no right-aligned Y tick labels exist.
+        assert!(!svg.contains("text-anchor=\"end\""));
+
+        // Transposed export still produces a valid plot using the swapped pair.
+        app.show_axis_labels = true;
+        app.show_ticks = true;
+        app.show_numbers = true;
+        app.transpose = true;
+        let (transposed, _, _) = app.current_plot_svg().unwrap();
+        assert!(transposed.starts_with("<svg"));
+        assert!(transposed.ends_with("</svg>\n"));
+        assert!(transposed.contains("P2 (linear)"));
+        assert!(transposed.contains("P1 (linear)"));
+
+        // Adjunct axis histograms (V6) are exported when enabled.
+        app.transpose = false;
+        let (plain, _, _) = app.current_plot_svg().unwrap();
+        assert!(!plain.contains("axis-histograms"));
+        app.show_axis_histograms = true;
+        let (with_histograms, _, _) = app.current_plot_svg().unwrap();
+        assert!(with_histograms.contains("id=\"axis-histograms\""));
+        assert!(with_histograms.contains("fill-opacity=\"0.45\""));
+        // The plot card reserves margins, so the histograms do not overlap
+        // the events inside the data rectangle.
+        assert!(with_histograms.len() > plain.len());
+    }
+
+    #[test]
+    fn view3d_opens_and_renders_the_current_sample() {
+        let mut app = app_with_synthetic_sample();
+        assert!(!app.view3d_open);
+        app.open_view3d();
+        assert!(app.view3d_open);
+        // Z is chosen distinct from the current X/Y pair.
+        assert_ne!(app.view3d_spec.z, app.view3d_spec.x);
+        assert_ne!(app.view3d_spec.z, app.view3d_spec.y);
+
+        let (svg, w, h) = app.view3d_svg().unwrap();
+        assert_eq!((w, h), (640, 480));
+        assert!(svg.contains("<circle"));
+        assert!(svg.ends_with("</svg>\n"));
+    }
+
+    #[test]
+    fn view3d_preview_shapes_cover_all_modes() {
+        let app = app_with_synthetic_sample();
+        for mode in crate::plot3d::View3DMode::all() {
+            let mut spec = app.view3d_spec.clone();
+            spec.mode = mode;
+            spec.x = 0;
+            spec.y = 1;
+            spec.z = 2;
+            let fcs = app.current_fcs().unwrap();
+            let shapes = crate::plot3d::preview_shapes(&fcs.data, &spec, 400, 300);
+            assert!(!shapes.is_empty(), "mode {mode:?} produced no shapes");
+        }
     }
 
     #[test]
@@ -6607,7 +10714,10 @@ mod tests {
     #[test]
     fn closing_with_unsaved_changes_prompts_and_cancels_the_close() {
         let ctx = egui::Context::default();
-        let mut app = FlowersApp { dirty: true, ..Default::default() };
+        let mut app = FlowersApp {
+            dirty: true,
+            ..Default::default()
+        };
 
         let output = ctx.run(close_request_input(), |ctx| app.draw(ctx));
 
@@ -6626,7 +10736,11 @@ mod tests {
         // The very first frame records the baseline snapshot for undo but must
         // not count as an edit.
         let mut raw = close_request_input();
-        raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap().events.clear();
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .clear();
         let _ = ctx.run(raw, |ctx| app.draw(ctx));
         assert!(!app.dirty, "an untouched workspace must start clean");
 
@@ -6667,7 +10781,10 @@ mod tests {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
 
         fn run(ctx: &egui::Context, screen: egui::Rect) -> (egui::Rect, Option<egui::Rect>) {
-            let raw = egui::RawInput { screen_rect: Some(screen), ..Default::default() };
+            let raw = egui::RawInput {
+                screen_rect: Some(screen),
+                ..Default::default()
+            };
             let mut central_rect: Option<egui::Rect> = None;
             let mut bottom_rect: Option<egui::Rect> = None;
             let _ = ctx.run(raw, |ctx| {
@@ -6694,5 +10811,4 @@ mod tests {
              (central={central:?}, bottom={bottom:?})"
         );
     }
-
 }

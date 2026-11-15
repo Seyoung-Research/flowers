@@ -1,7 +1,10 @@
-//! Export helpers: CSV reports of gated population counts and percentages.
+//! Export helpers: CSV reports of gated population counts and percentages,
+//! plus statistics tables derived from population profiles.
 
 use std::io::Write;
 use std::path::Path;
+
+use crate::statistics::PopulationProfile;
 
 /// One row of a population report.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,6 +90,56 @@ pub fn write_populations_csv(path: &Path, rows: &[PopulationRow]) -> std::io::Re
     file.write_all(populations_csv(rows).as_bytes())
 }
 
+/// One row of a statistics table: sample x population x statistic value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatisticRow {
+    /// Sample (file) name the statistic was computed from.
+    pub sample: String,
+    /// Population / gate name.
+    pub population: String,
+    /// Human-readable statistic label (e.g. "mean", "p95").
+    pub statistic: String,
+    /// Computed value.
+    pub value: f64,
+}
+
+/// Flatten population profiles into statistics-table rows for one sample.
+pub fn statistics_rows(sample: &str, profiles: &[PopulationProfile]) -> Vec<StatisticRow> {
+    let mut rows = Vec::new();
+    for profile in profiles {
+        for stat in &profile.stats {
+            rows.push(StatisticRow {
+                sample: sample.to_string(),
+                population: profile.name.clone(),
+                statistic: crate::statistics::statistic_label(&stat.statistic),
+                value: stat.value,
+            });
+        }
+    }
+    rows
+}
+
+/// Renders statistics rows as a CSV document: `Sample,Population,Statistic,Value`.
+pub fn statistics_csv(rows: &[StatisticRow]) -> String {
+    let mut out = String::from("Sample,Population,Statistic,Value\n");
+    for row in rows {
+        out.push_str(&format!(
+            "{},{},{},{:.6}\n",
+            csv_field(&row.sample),
+            csv_field(&row.population),
+            csv_field(&row.statistic),
+            row.value
+        ));
+    }
+    out
+}
+
+/// Writes statistics rows to a `.csv` file.
+pub fn write_statistics_csv(path: &Path, rows: &[StatisticRow]) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(statistics_csv(rows).as_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +187,35 @@ mod tests {
             gate_summary: None,
         }];
         assert!(populations_csv(&rows).contains("\"a,b\""));
+    }
+
+    #[test]
+    fn statistics_csv_flattens_profiles_to_rows() {
+        let profile = PopulationProfile {
+            name: "Live".to_string(),
+            count: 25,
+            parent_count: None,
+            total_count: Some(100),
+            stats: vec![
+                crate::statistics::PopulationStat {
+                    parameter: "FSC".to_string(),
+                    statistic: crate::statistics::Statistic::Mean,
+                    value: 3.5,
+                },
+                crate::statistics::PopulationStat {
+                    parameter: "CD4".to_string(),
+                    statistic: crate::statistics::Statistic::Median,
+                    value: 7.25,
+                },
+            ],
+        };
+        let rows = statistics_rows("sample.fcs", &[profile]);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].statistic, "mean");
+        assert_eq!(rows[1].statistic, "median");
+        let csv = statistics_csv(&rows);
+        assert!(csv.starts_with("Sample,Population,Statistic,Value"));
+        assert!(csv.contains("sample.fcs,Live,mean,3.500000"));
+        assert!(csv.contains("sample.fcs,Live,median,7.250000"));
     }
 }
