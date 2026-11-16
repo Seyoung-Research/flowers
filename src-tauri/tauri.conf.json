@@ -1,0 +1,26 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "frontend-dist"
+  },
+  "identifier": "com.seyoung.flows",
+  "version": "0.2.0",
+  "productName": "flowers",
+  "bundle": {
+    "active": true,
+    "category": "public.app-category.productivity",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "targets": [
+      "dmg"
+    ]
+  },
+  "plugins": {}
+}

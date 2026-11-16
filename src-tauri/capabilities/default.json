@@ -1,0 +1,6 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri/scripts/capability-schema.json",
+  "identifier": "default",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

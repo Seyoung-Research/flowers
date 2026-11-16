@@ -24,14 +24,17 @@ written in Rust. This guide explains how to use the graphical user interface
 8. [Themes](#themes)
 9. [Undo / Redo](#undo--redo)
 10. [Applying Gates Across Files](#applying-gates-across-files)
-11. [Export](#export)
+11. [Gating-ML Import / Export](#gatingml-import--export)
+12. [Mask Gates](#mask-gates)
+13. [Export](#export)
     - [SVG Export](#svg-export)
     - [Raster Image Export (PNG/JPEG/TIFF)](#raster-image-export-pngjpegtiff)
     - [CSV Export](#csv-export)
-12. [Layout Editor](#layout-editor)
+14. [Table Editor](#table-editor)
+15. [Layout Editor](#layout-editor)
     - [Axis Label Styling](#axis-label-styling)
-13. [Workspaces](#workspaces)
-14. [Command-Line Interface](#command-line-interface)
+16. [Workspaces](#workspaces)
+17. [Command-Line Interface](#command-line-interface)
 
 ---
 
@@ -112,7 +115,10 @@ The main header shows whether the current sample is compensated.
 
 Open **Axis options** in the left sidebar:
 
-- **X scale / Y scale**: Choose **Linear** or **Log** (base-10).
+- **X scale / Y scale**: Choose **Linear** or **Log** (base-10) as the primary
+  scales. Any other transform (Arcsinh, Biexponential, Logicle, Hyperlog, RobustLog,
+  Miltenyi, or a lookup table) is available under the **Advanced options**
+  submenu.
 - **X range / Y range**: Set the visible window.
   - Large values are shown in **scientific notation** (e.g. `5.300871e6`) so
     10⁷-scale numbers stay short and readable.
@@ -121,8 +127,11 @@ Open **Axis options** in the left sidebar:
     pixel.
   - **Click** a value to type an exact number. Both plain (`250000`) and
     scientific (`2.5e5`, `1e7`) input are accepted.
-- **− / +**: Zoom the axis out / in about its centre, similar to FlowJo. On a
-  log axis the zoom steps are even in decades.
+- **− / +** buttons: Each axis bound (minimum and maximum) has its own **−** and
+  **+** button beside its number, so the minimum and the maximum can be adjusted
+  independently. The original zoom buttons still widen/narrow the whole range
+  about its centre, similar to FlowJo. On a log axis the zoom steps are even in
+  decades.
 - **Auto**: Click **Auto** next to an axis to fit it to the data.
 
 Axis tick labels use compact scientific notation for large values (e.g. `7e4`
@@ -135,7 +144,11 @@ Open **Point & view options** in the left sidebar:
 - **Dot colour**: Click the colour swatch to pick a colour.
 - **Density gradient layering** (checked by default): colours points by local
   density (blue → cyan → yellow → red) where points overlap.
-- **View**: Choose **Dots**, **Contour**, or **Histogram**.
+- **View**: Choose **Dots**, **Pseudocolor**, **Zebra**, **Contour**, or
+  **Histogram**.
+  - **Pseudocolor** / **Zebra**: colour the dots by density. Pick a **density
+    map** (Rainbow, Jet, Viridis, Greyscale, or Zebra); **Zebra** wraps the density
+    into alternating bands.
   - **Contour**: topographic contour lines instead of individual points.
   - **Histogram**: 1D histogram of the X-axis channel, with counts on the Y axis.
 
@@ -250,6 +263,12 @@ Gates are organised in a tree shown in the right panel:
 - Click **✖** to delete a gate (children are re-parented to the deleted gate's
   parent).
 
+Gates are listed in draw order; gates created later are drawn on top of earlier
+ones, and a gate with a later sibling is marked **`[overlapped]`** in the tree.
+Clicking the plot selects the topmost gate under the cursor; to manipulate a gate
+that sits below another one, select it in the tree first — only the selected gate
+is moved or edited.
+
 Counts are shown for each gate together with two percentages: the share of
 **all events** in the sample (`% total`) and, for nested gates, the share of
 the **parent population** (`% parent`). Root gates show only `% total`; child
@@ -353,6 +372,72 @@ event count.
 
 ---
 
+## Gating-ML Import / Export
+
+The GUI can exchange gating strategies with other tools using the Gating-ML
+1.5 / 2.0 standard.
+
+### Export
+
+- **File ▸ Export Gating-ML…**: writes the current sample's gates to a Gating-ML
+  2.0 XML file via the **Gating-ML** extension (including any applied
+  compensation matrix). Rectangle, ellipse, polygon and quadrant gates are
+  exported; gates without a Gating-ML geometry mapping (e.g. bilinear line gates)
+  are skipped and reported.
+
+### Import
+
+- **File ▸ Import Gating-ML…**: reads a Gating-ML XML file and adds its gates to
+  the current sample's gate tree.
+
+- Rectangle / polygon / ellipse / quadrant gates are converted into editable GUI
+  gates (rect / polygon / ellipse / quadrant); boolean expressions are not
+  supported yet and are reported as warnings instead of being silently dropped.
+
+- Parameter names are resolved against the current sample's FCS parameters, so
+  `FSC-H` / `SSC-H`-style names and `P0` / `P1` fallbacks both work.
+
+### Command-line equivalents
+
+The CLI equivalents are documented in [Command-Line Interface](#command-line-interface):
+
+```bash
+cargo run -- gatingml export gates.gatingml --project project.wsp --version 2.0
+cargo run -- gatingml inspect gates.gatingml
+cargo run -- gatingml convert gates.gatingml gates_v2.xml --version 2.0
+```
+
+---
+
+## Mask Gates
+
+FlowJo-style mask gates let you select events explicitly (for example after
+reviewing a plot, or by importing a mask computed elsewhere).
+
+### Importing a Mask in the GUI
+
+- **File ▸ Import Mask…**: opens a file dialog and adds the selected events as a
+  **Mask** gate (**Mask 1**, **Mask 2**, …) in the current sample's gate tree.
+- The mask file is read as an event-index list (`1 2 3`, comma/semicolon or
+  whitespace separated, `#` comments allowed); binary bit-set masks are detected
+  and accepted too.
+- The gate then behaves like any other gate: it shows its event count in the
+  **Gate tree**, participates in hierarchies, cross-sample tables and CSV
+  exports, and can be renamed / duplicated / deleted like any other gate.
+
+### Mask vs. geometric gates
+
+Mask gates are index-based rather than value-based, so they are not drawable on
+the scatter plot and cannot be converted to geometric gates.
+
+### Command-line equivalent
+
+```bash
+cargo run -- mask data/D1_WT.fcs MyMask mask.txt
+```
+
+---
+
 ## Export
 
 ### SVG Export
@@ -373,6 +458,21 @@ event count.
 - Columns: Sample, Population, Parent, Count, Total, PercentOfTotal,
   PercentOfParent, GateSummary.
 - Also available from the right panel: **Populations across samples ▸ Export CSV…**.
+
+---
+
+## Table Editor
+
+Open **File ▸ Table Editor…** (or click **Table Editor…** in the left sidebar) to
+review the computed statistics as a table and export them.
+
+- The window lists one row per computed statistic for the current population:
+  `parameter / statistic = value`.
+- **Export statistics CSV** writes the full statistics table (all loaded samples
+  and populations) to a CSV file.
+
+Use the **Statistics** panel to add, edit, and manage statistic sets; the table
+editor reflects the currently computed rows.
 
 ---
 
@@ -480,7 +580,9 @@ cargo run -- hist data/D1_WT.fcs hist.svg 0
 cargo run -- compensate data/D1_WT.fcs matrix.csv
 ```
 
-CLI subcommands: `load`, `gate`, `stats`, `plot`, `hist`, `compensate`.
+CLI subcommands: `load`, `gate`, `mask`, `stats`, `plot`, `hist`, `compensate`,
+`gatingml`. See the [Gating-ML](#gatingml-import--export) section for the
+Gating-ML subcommands.
 
 ---
 

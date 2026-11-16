@@ -143,6 +143,11 @@ pub enum AxisScale {
 }
 
 impl AxisScale {
+    /// The primary axis scales offered by the GUI axis picker: Linear and Log.
+    pub fn primary() -> Vec<Self> {
+        vec![AxisScale::Linear, AxisScale::Log]
+    }
+
     /// All supported axis transforms, in display order.
     pub fn all() -> Vec<AxisScale> {
         vec![

@@ -1,13 +1,8 @@
 # List of User found Bugs:
-- [ ] "Control" window on Left pane window gets pushed out of frame with no way of scrolling down when you add a lot of gates to the plot
-- [ ] Quadrant gate does not get placed unless the user drags on the window, but it should just be placed when the user selects it and clicks on where they want the gate to be on the plot
-- [ ] Put a "-" and "+" on either side of the x and y axis numbers to adjust the min and max values separately
-- [ ] There are too many options for x and y axis manipulation. Have it be "Log" Linear" and have a "Advanced Options" Sub menu that houses the other manipulation methods
-- [ ] Y axis label ("SSC-H" or etc.) is now too far away from the y-axis. Have it have the same margin around the word as the x-axis label without it getting put over the y-axis numbers
-- [ ] Initial flowers main window has a box next to "Load FCS" instead of a user seeable image
-- [ ] No visible table editor button or any way to edit the table or generate statistics from the data
-- [ ] When multiple gates are on top of each other, no way to select a gate that is below a different one. Have a way to be able to see which gates are on top of others, select a gate to manipulate, and only move or chanage that one
-- [ ] This will primarily be a GUI application and not a CLI application. Make sure any feature that is available and reasonable to have in the GUI application is in the GUI application.
-- [ ] Pseudocolor and Zebra don't seem to be working in the GUI to change the dots
-- [ ] Update USER_GUIDE.md in the docs folder to include every new featureo
-
+- [ ] Pseudocolor and Zebra don't seem to be working in the GUI to change the dots — Fixed in code paths and covered by tests (`pseudocolor_export_uses_the_selected_density_map`, density-map view wiring); pending a visual confirmation in the running GUI.
+- [ ] Update USER_GUIDE.md in the docs folder to include every new feature — Fixed: docs updated (TOC renumbered, axes, dot colour/view, Table Editor sections).
+- [x] Table Editor is too big and the top is clipped making it impossible for the user to close out of the menu — Fixed: the window content is now wrapped in an egui vertical `ScrollArea`, so overflowing statistic content scrolls instead of clipping and the Export/Close buttons stay reachable.
+- [ ] Table Editor does not make any sense to use to the user and is not intuitive to control
+- [x] No way to close out 3D Viewer — Fixed: the egui "3D View" window is now created with `.open(&mut open)` bound to the app's `view3d_open` flag (same pattern as the Layout Editor window), so the window title-bar close button is present and sets it to `false`.
+- [x] Just like how there's a "Layout Editor" button on the top row, split out the different tools "Table Editor" and "Statistics" from the "File" Dropdown and put it on the main top bar for easy navigation — Fixed: the top-bar menu closure now renders standalone "Statistics Panel…" and "Table Editor…" buttons before the File menu (same top-bar area as the existing "Layout Editor" button); the File menu no longer lists them.
+- [x] Get rid of the fR logo, and use logo.jpeg for all of the logos for the app — Fixed: the in-app header brand mark now renders the `logo.jpeg` image (egui `Image` via a cached PNG encoding of `logo.jpeg`); the native window icon (`src/gui_main.rs::logo_icon`) and the Tauri bundle icons (`src-tauri/icons/`, incl. `icon.icns` / `icon.ico` generated from `logo.jpeg`) now all use `logo.jpeg`.

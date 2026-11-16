@@ -290,6 +290,10 @@ pub enum GateShape {
         y2: f64,
         below: bool,
     },
+    /// Events selected via an external mask (index-based).
+    Mask {
+        indices: Vec<usize>,
+    },
 }
 
 /// One layout-editor panel.

@@ -900,7 +900,10 @@ fn dot_plot_svg_impl(
     let y_center = origin_y - plot_h / 2.0;
     // Axis labels.
     let x_anchor = (origin_x + plot_w / 2.0, style.height as f64 - 10.0);
-    let y_anchor = (15.0_f64, y_center);
+    // The Y label rotates about its anchor (the label centre), so anchor it just
+    // left of the y-axis with the same margin the X label has below the x-axis,
+    // clear of the y-axis tick numbers.
+    let y_anchor = (origin_x - 30.0, y_center);
     let x_text = label_with_scale(x_label, &style.x_scale, style.show_scale_labels);
     let y_text = label_with_scale(y_label, &style.y_scale, style.show_scale_labels);
     if style.show_axis_labels {
@@ -1527,7 +1530,7 @@ pub fn histogram_svg(
 
     let y_center = origin_y - plot_h / 2.0;
     let x_anchor = (origin_x + plot_w / 2.0, style.height as f32 - 10.0);
-    let y_anchor = (15.0_f64, y_center as f64);
+    let y_anchor = ((origin_x as f64) - 30.0, y_center as f64);
     let x_text = label_with_scale(label, &style.x_scale, style.show_scale_labels);
     let y_text = if y_label.is_empty() { "Count" } else { y_label };
     if style.show_axis_labels {
@@ -2784,6 +2787,36 @@ mod tests {
         assert!(svg.contains("FSC"));
         assert!(svg.contains("SSC"));
         assert!(svg.contains("<circle"));
+    }
+
+    #[test]
+    fn dot_plot_svg_places_the_y_axis_label_clear_of_the_axis() {
+        let data = array![[1.0, 2.0], [3.0, 4.0]];
+        let svg = dot_plot_svg(
+            &data,
+            0,
+            1,
+            "FSC",
+            "SSC",
+            &[],
+            None,
+            None,
+            &[],
+            &PlotStyle::default(),
+        );
+        let y_label_line = svg
+            .lines()
+            .find(|l| l.contains(">SSC "))
+            .expect("the y axis label must be rendered");
+        let after_x = y_label_line.split_once("x=\"").expect("x attribute").1;
+        let x = after_x
+            .split('"')
+            .next()
+            .and_then(|s| s.parse::<f64>().ok())
+            .expect("y axis label x position");
+        // The y axis itself sits at x = 60; the rotated label must be placed just
+        // left of it (origin_x - 30 = 30) instead of far away at a fixed offset.
+        assert_eq!(x, 30.0, "y axis label x was {x}");
     }
 
     #[test]

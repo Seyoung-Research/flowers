@@ -377,6 +377,7 @@ pub fn shape_to_gatingml(
             })
         }
         GateShape::Bilinear { .. } => None,
+        GateShape::Mask { .. } => None,
     }
 }
 
