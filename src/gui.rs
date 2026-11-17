@@ -257,45 +257,106 @@ impl ImageLoader for FlowersImageLoader {
     }
 }
 
-/// Cached PNG encoding of the project `logo.jpeg`, used by the header brand mark.
+/// The project logo, embedded at compile time.
+///
+/// Reading `logo.jpeg` from the source directory at run time only works on the
+/// machine the app was built on: an installed `.app` / `.msi` does not ship the
+/// repository next to the executable, so the header brand mark and the window
+/// icon went missing. Embedding the bytes keeps them available everywhere.
+const LOGO_JPEG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/logo.jpeg"));
+
+/// Decode the embedded logo, once per process.
+fn logo_rgba() -> Option<&'static image::RgbaImage> {
+    static CACHE: std::sync::OnceLock<Option<image::RgbaImage>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            image::load_from_memory(LOGO_JPEG)
+                .ok()
+                .map(|img| img.to_rgba8())
+        })
+        .as_ref()
+}
+
+/// Cached PNG encoding of the project logo, used by the header brand mark.
 fn logo_png_bytes() -> &'static [u8] {
     static CACHE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/logo.jpeg"));
-            let img = image::open(path).expect("failed to open logo.jpeg");
             let mut buf = Vec::new();
-            let mut cursor = std::io::Cursor::new(&mut buf);
-            img.write_to(&mut cursor, image::ImageFormat::Png)
-                .expect("failed to encode logo as png");
+            if let Some(img) = logo_rgba() {
+                let mut cursor = std::io::Cursor::new(&mut buf);
+                if img.write_to(&mut cursor, image::ImageFormat::Png).is_err() {
+                    buf.clear();
+                }
+            }
             buf
         })
         .as_slice()
 }
 
-/// egui image source for the project logo (`logo.jpeg`), cached across frames.
-fn logo_image_source() -> egui::ImageSource<'static> {
-    static CACHE: std::sync::OnceLock<egui::ImageSource<'static>> = std::sync::OnceLock::new();
+/// egui image source for the project logo, cached across frames.
+///
+/// Returns `None` only if the embedded JPEG could not be decoded, in which case
+/// the header falls back to a painted flower mark instead of an empty square.
+fn logo_image_source() -> Option<egui::ImageSource<'static>> {
+    static CACHE: std::sync::OnceLock<Option<egui::ImageSource<'static>>> =
+        std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            egui::ImageSource::from(("bytes://flowers-logo.png", logo_png_bytes().to_vec()))
+            let png = logo_png_bytes();
+            (!png.is_empty())
+                .then(|| egui::ImageSource::from(("bytes://flowers-logo.png", png.to_vec())))
         })
         .clone()
 }
 
+/// Size of the header brand mark, in points.
+const BRAND_MARK_SIZE: f32 = 26.0;
+
+/// Fallback brand mark: a small flower painted with circles, used only when the
+/// embedded logo cannot be decoded.
+fn paint_flower_mark(ui: &mut egui::Ui, color: egui::Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(BRAND_MARK_SIZE, BRAND_MARK_SIZE),
+        egui::Sense::hover(),
+    );
+    let center = rect.center();
+    let petal = BRAND_MARK_SIZE * 0.21;
+    let orbit = BRAND_MARK_SIZE * 0.22;
+    for i in 0..5 {
+        let angle = std::f32::consts::TAU * (i as f32) / 5.0 - std::f32::consts::FRAC_PI_2;
+        let pos = center + egui::vec2(angle.cos(), angle.sin()) * orbit;
+        ui.painter().circle_filled(pos, petal, color);
+    }
+    ui.painter().circle_filled(center, petal * 0.72, color);
+    response
+}
+
 /// The header bar: brand mark + app name on the left, menu bar on the right.
 fn header_bar(ui: &mut egui::Ui, p: Palette, menu: impl FnOnce(&mut egui::Ui)) {
-    ui.horizontal(|ui| {
-        // Brand mark: the project logo image.
+    // Wrapped rather than a single row: on a 1366 px laptop the brand block
+    // plus all menus and editor buttons do not fit, and egui's plain horizontal
+    // layout let the last buttons run off the right edge.
+    ui.horizontal_wrapped(|ui| {
+        // Brand mark: the project logo on a white rounded card. The artwork has
+        // a pale pastel background, so it needs a light card and a border to
+        // read as a logo instead of a blank square.
         egui::Frame::none()
-            .fill(p.teal)
-            .rounding(9.0)
-            .inner_margin(egui::Margin::same(8.0))
+            .fill(egui::Color32::WHITE)
+            .stroke(egui::Stroke::new(1.0_f32, p.border))
+            .rounding(8.0)
+            .inner_margin(egui::Margin::same(3.0))
             .show(ui, |ui| {
-                egui::Image::new(logo_image_source())
-                    .max_width(32.0)
-                    .max_height(32.0)
-                    .ui(ui);
+                ui.set_width(BRAND_MARK_SIZE);
+                ui.set_height(BRAND_MARK_SIZE);
+                if let Some(source) = logo_image_source() {
+                    egui::Image::new(source)
+                        .fit_to_exact_size(egui::vec2(BRAND_MARK_SIZE, BRAND_MARK_SIZE))
+                        .rounding(6.0)
+                        .ui(ui);
+                } else {
+                    paint_flower_mark(ui, p.teal);
+                }
             });
         ui.add_space(10.0);
         ui.vertical(|ui| {
@@ -1185,6 +1246,246 @@ enum InteractOutcome {
     Click([f64; 2]),
 }
 
+/// Indices, with their hierarchy depth, of the gates drawn on one parameter
+/// pair, in draw order (later gates are drawn on top of earlier ones).
+///
+/// The detached window uses this for its gate list: gates often overlap, and the
+/// one underneath cannot be reached by clicking the plot, so it has to be picked
+/// from the list first.
+fn gates_on_pair(
+    gates: &[GateDef],
+    children: &[Vec<usize>],
+    x: usize,
+    y: usize,
+) -> Vec<(usize, usize)> {
+    fn rec(
+        node: usize,
+        depth: usize,
+        gates: &[GateDef],
+        children: &[Vec<usize>],
+        x: usize,
+        y: usize,
+        out: &mut Vec<(usize, usize)>,
+    ) {
+        let gate = &gates[node];
+        if gate.x_idx == x && gate.y_idx == y {
+            out.push((node, depth));
+        }
+        for &child in children.get(node).map(Vec::as_slice).unwrap_or(&[]) {
+            rec(child, depth + 1, gates, children, x, y, out);
+        }
+    }
+
+    let mut out = Vec::new();
+    for root in (0..gates.len()).filter(|&i| gates[i].parent.is_none()) {
+        rec(root, 0, gates, children, x, y, &mut out);
+    }
+    out
+}
+
+/// Every gate in depth-first hierarchy order, with its depth.
+fn gate_hierarchy_order(gates: &[GateDef], children: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    fn rec(node: usize, depth: usize, children: &[Vec<usize>], out: &mut Vec<(usize, usize)>) {
+        out.push((node, depth));
+        for &child in children.get(node).map(Vec::as_slice).unwrap_or(&[]) {
+            rec(child, depth + 1, children, out);
+        }
+    }
+
+    let mut out = Vec::new();
+    for root in (0..gates.len()).filter(|&i| gates[i].parent.is_none()) {
+        rec(root, 0, children, &mut out);
+    }
+    out
+}
+
+/// Gate chooser for a detached population window.
+///
+/// Lists the gates drawn on this plot in hierarchy order so any of them can be
+/// selected — including a gate hidden underneath another one — and then moved
+/// with the transform buttons or by dragging it (the plot always manipulates the
+/// selected gate first). Returns the gate that was clicked, if any.
+fn popout_gate_list_ui(
+    ui: &mut egui::Ui,
+    p: Palette,
+    gates: &[GateDef],
+    entries: &[(usize, usize)],
+    counts: &[usize],
+    selected: Option<usize>,
+) -> Option<usize> {
+    let mut picked = None;
+    for &(node, depth) in entries {
+        let gate = &gates[node];
+        ui.horizontal(|ui| {
+            ui.add_space((depth as f32) * 12.0);
+            egui::Frame::none()
+                .fill(gate.color)
+                .rounding(2.0)
+                .inner_margin(egui::Margin::same(3.0))
+                .show(ui, |ui| {
+                    ui.label(" ");
+                });
+            let label = format!(
+                "{}  [{}]  {}",
+                gate.name,
+                gate.kind.label(),
+                counts.get(node).copied().unwrap_or(0)
+            );
+            if ui
+                .selectable_label(selected == Some(node), label)
+                .on_hover_text("Select this gate to move it, even if another gate covers it")
+                .clicked()
+            {
+                picked = Some(node);
+            }
+        });
+    }
+    if entries.is_empty() {
+        ui.label(
+            egui::RichText::new("No gates on these axes yet.")
+                .small()
+                .color(p.muted),
+        );
+    }
+    picked
+}
+
+/// Statistics offered by the "Add statistic…" menu of a statistic set.
+fn common_statistics() -> Vec<(&'static str, crate::statistics::Statistic)> {
+    use crate::statistics::Statistic as S;
+    vec![
+        ("Count", S::Count),
+        ("% of parent", S::PercentOfParent),
+        ("% of total", S::PercentOfTotal),
+        ("Mean", S::Mean),
+        ("Median", S::Median),
+        ("Std deviation", S::StdDev),
+        ("CV", S::Cv),
+        ("Geometric mean", S::GeoMean),
+        ("Minimum", S::Min),
+        ("Maximum", S::Max),
+        ("Mode", S::Mode),
+        ("5th percentile", S::Percent5),
+        ("10th percentile", S::Percent10),
+        ("90th percentile", S::Percent90),
+        ("95th percentile", S::Percent95),
+        ("Robust SD", S::RobustSd),
+        ("Robust CV", S::RobustCv),
+        ("50th percentile", S::Percentile(50.0)),
+    ]
+}
+
+/// What the per-set editor asked the statistics panel to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum SetAction {
+    #[default]
+    None,
+    Copy,
+    Remove,
+}
+
+/// Editor for one statistic set: list its configured statistics, add new ones
+/// from a menu, delete individual ones, and copy or remove the set itself.
+fn statistic_set_ui(
+    ui: &mut egui::Ui,
+    p: Palette,
+    set: &mut crate::statistics::StatisticSet,
+) -> SetAction {
+    let mut action = SetAction::None;
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{} statistic(s)", set.stats.len()))
+                .small()
+                .color(p.muted),
+        );
+        ui.menu_button("Add statistic…", |ui| {
+            ui.set_min_width(200.0);
+            for (label, statistic) in common_statistics() {
+                if ui.button(label).clicked() {
+                    set.stats.push(crate::statistics::StatSpec {
+                        parameter: None,
+                        statistic,
+                        expected: None,
+                        heat: None,
+                    });
+                    ui.close_menu();
+                }
+            }
+        });
+        if ui.small_button("Copy set").clicked() {
+            action = SetAction::Copy;
+        }
+        if ui.small_button("Remove set").clicked() {
+            action = SetAction::Remove;
+        }
+    });
+
+    if set.stats.is_empty() {
+        ui.label(
+            egui::RichText::new("No statistics in this set yet — use “Add statistic…”.")
+                .small()
+                .color(p.muted),
+        );
+    }
+
+    let mut remove: Option<usize> = None;
+    for (j, spec) in set.stats.iter().enumerate() {
+        ui.horizontal(|ui| {
+            let target = spec.parameter.as_deref().unwrap_or("all parameters");
+            ui.label(format!(
+                "• {} — {}",
+                crate::statistics::statistic_label(&spec.statistic),
+                target
+            ));
+            if ui
+                .small_button("✖")
+                .on_hover_text("Remove this statistic")
+                .clicked()
+            {
+                remove = Some(j);
+            }
+        });
+    }
+    if let Some(j) = remove.filter(|j| *j < set.stats.len()) {
+        set.stats.remove(j);
+    }
+
+    action
+}
+
+/// Renders computed population statistics as a three-column table.
+fn statistics_table_ui(ui: &mut egui::Ui, p: Palette, stats: &[crate::statistics::PopulationStat]) {
+    if stats.is_empty() {
+        ui.label(
+            egui::RichText::new("Load an FCS file to compute statistics.")
+                .small()
+                .color(p.muted),
+        );
+        return;
+    }
+    egui::ScrollArea::vertical()
+        .max_height(260.0)
+        .show(ui, |ui| {
+            egui::Grid::new("statistics_table_grid")
+                .striped(true)
+                .num_columns(3)
+                .spacing([18.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Parameter").strong());
+                    ui.label(egui::RichText::new("Statistic").strong());
+                    ui.label(egui::RichText::new("Value").strong());
+                    ui.end_row();
+                    for row in stats {
+                        ui.label(&row.parameter);
+                        ui.label(crate::statistics::statistic_label(&row.statistic));
+                        ui.monospace(format_edit_num(row.value));
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
 /// Topmost gate whose body contains `pos`, preferring the selected gate when
 /// several overlap.
 fn gate_at(gates: &[GateDef], pos: [f64; 2], selected: Option<usize>) -> Option<usize> {
@@ -1285,12 +1586,15 @@ fn drive_interact(
     }
 
     if let Some(p) = inter.clicked {
-        // Clicking a gate body selects it; clicking empty space places a
-        // quadrant / bilinear gate when that tool is active.
-        if let Some(gi) = gate_at(gates, p, selected) {
-            outcome = Some(InteractOutcome::Select(gi));
-        } else if matches!(new_type, NewGateType::Quadrant | NewGateType::Bilinear) {
+        // The place-on-click tools win over selection. In a detached window the
+        // population's own gate fills most of the plot, so looking for a gate
+        // under the cursor first swallowed the click and no quadrant gate was
+        // ever created. While one of these tools is active, gates are selected
+        // from the hierarchy list instead of by clicking them.
+        if matches!(new_type, NewGateType::Quadrant | NewGateType::Bilinear) {
             outcome = Some(InteractOutcome::Click(p));
+        } else if let Some(gi) = gate_at(gates, p, selected) {
+            outcome = Some(InteractOutcome::Select(gi));
         }
     }
 
@@ -2667,6 +2971,9 @@ pub struct FlowersApp {
 
     /// Whether the Table Editor window is open.
     table_open: bool,
+    /// Show every population as a small plot in the main window instead of the
+    /// single selected-axes plot.
+    population_grid: bool,
 
     name_edit: String,
     status: String,
@@ -2763,6 +3070,7 @@ impl Default for FlowersApp {
             lookup_source: None,
             lookup_message: String::new(),
             table_open: false,
+            population_grid: false,
             name_edit: String::new(),
             status: "Ready — load an FCS file".to_string(),
             pending_apply_prompt: None,
@@ -2999,6 +3307,164 @@ fn adjust_axis_bound(range: &mut (f64, f64), scale: &AxisScale, is_min: bool, fa
         return;
     }
     *range = (next_a, next_b);
+}
+
+/// What a detached-window axis row asked the caller to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AxisAction {
+    /// Nothing changed.
+    #[default]
+    None,
+    /// The transform changed, so the ranges need to be refitted to the data.
+    Rescale,
+    /// "Auto" was pressed: refit the ranges to the data.
+    AutoRange,
+}
+
+/// One axis row of a detached population window.
+///
+/// The detached window is short on vertical space, so each axis exposes exactly
+/// three controls: **Log**, **Linear** and an **Advanced options** dropdown. The
+/// dropdown holds everything else the axis offers — the remaining transforms
+/// (arcsinh, biexponential, logicle, hyperlog, robust log, Miltenyi, lookup) plus
+/// the range editor and the zoom buttons, which used to be printed inline.
+fn popout_axis_row(
+    ui: &mut egui::Ui,
+    p: Palette,
+    st: &mut PopoutState,
+    axis_x: bool,
+) -> AxisAction {
+    let mut action = AxisAction::None;
+    let axis = if axis_x { "X" } else { "Y" };
+    // Work on a copy so the range/zoom controls below can borrow the range
+    // without fighting the borrow checker over the same `PopoutState`.
+    let mut scale = if axis_x {
+        st.x_scale.clone()
+    } else {
+        st.y_scale.clone()
+    };
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{axis} axis:"))
+                .small()
+                .color(p.muted),
+        );
+        for quick in [AxisScale::Log, AxisScale::Linear] {
+            if ui.selectable_label(scale == quick, quick.label()).clicked() {
+                scale = quick;
+                action = AxisAction::Rescale;
+            }
+        }
+
+        let advanced: Vec<AxisScale> = AxisScale::all()
+            .into_iter()
+            .filter(|s| !s.is_linear() && *s != AxisScale::Log)
+            .collect();
+        ui.menu_button(format!("Advanced options ({axis}) ▾"), |ui| {
+            ui.set_min_width(250.0);
+            ui.label(
+                egui::RichText::new("Other transforms")
+                    .small()
+                    .color(p.muted),
+            );
+            for option in &advanced {
+                if ui
+                    .selectable_label(scale == *option, option.label())
+                    .clicked()
+                {
+                    scale = option.clone();
+                    action = AxisAction::Rescale;
+                    ui.close_menu();
+                }
+            }
+
+            ui.separator();
+            ui.label(egui::RichText::new("Range").small().color(p.muted));
+            let range = if axis_x {
+                &mut st.x_range
+            } else {
+                &mut st.y_range
+            };
+            let span = (range.1 - range.0).abs().max(1.0);
+            ui.horizontal(|ui| {
+                ui.add(range_drag_value(&mut range.0, span));
+                ui.label("to");
+                ui.add(range_drag_value(&mut range.1, span));
+            });
+            // Independent − / + nudges for each end of the axis. These move
+            // only the minimum or only the maximum, unlike the zoom buttons
+            // below which move both ends around the centre.
+            ui.label(
+                egui::RichText::new("Adjust min / max")
+                    .small()
+                    .color(p.muted),
+            );
+            ui.horizontal(|ui| {
+                ui.label("Min");
+                if ui
+                    .small_button("−")
+                    .on_hover_text(format!("Lower the {axis} minimum"))
+                    .clicked()
+                {
+                    adjust_axis_bound(range, &scale, true, 0.9);
+                }
+                if ui
+                    .small_button("+")
+                    .on_hover_text(format!("Raise the {axis} minimum"))
+                    .clicked()
+                {
+                    adjust_axis_bound(range, &scale, true, 1.1);
+                }
+                ui.add_space(10.0);
+                ui.label("Max");
+                if ui
+                    .small_button("−")
+                    .on_hover_text(format!("Lower the {axis} maximum"))
+                    .clicked()
+                {
+                    adjust_axis_bound(range, &scale, false, 0.9);
+                }
+                if ui
+                    .small_button("+")
+                    .on_hover_text(format!("Raise the {axis} maximum"))
+                    .clicked()
+                {
+                    adjust_axis_bound(range, &scale, false, 1.1);
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui
+                    .small_button("−")
+                    .on_hover_text(format!("Zoom {axis} out"))
+                    .clicked()
+                {
+                    zoom_axis_range(range, &scale, 1.25);
+                }
+                if ui
+                    .small_button("+")
+                    .on_hover_text(format!("Zoom {axis} in"))
+                    .clicked()
+                {
+                    zoom_axis_range(range, &scale, 0.8);
+                }
+                if ui
+                    .small_button("Auto")
+                    .on_hover_text("Fit the range to the events again")
+                    .clicked()
+                {
+                    action = AxisAction::AutoRange;
+                }
+            });
+        });
+    });
+
+    if axis_x {
+        st.x_scale = scale;
+    } else {
+        st.y_scale = scale;
+    }
+    action
 }
 
 // -- workspace (de)serialisation helpers -----------------------------------
@@ -3833,33 +4299,63 @@ impl FlowersApp {
     }
 
     /// Rows shown in the statistics panel for the current population.
+    ///
+    /// Selecting a gate computes that gate's statistics; with nothing selected
+    /// the whole sample is profiled so the panel is never blank right after a
+    /// file is loaded.
     fn stats_panel_profiles(&self) -> Vec<crate::statistics::PopulationProfile> {
-        let Some(selected) = self.selected_gate else {
-            return Vec::new();
-        };
         let Some(fcs) = self.current_fcs() else {
             return Vec::new();
         };
-        let Some(indices) = self.pop_indices.get(selected).cloned() else {
-            return Vec::new();
-        };
-        let names = parameter_names(fcs);
-        let parent_count = self
-            .gates
-            .get(selected)
-            .and_then(|g| g.parent)
-            .and_then(|p| self.pop_indices.get(p).map(|v| v.len()));
         let total_count = fcs.event_count;
-        vec![crate::statistics::compute_profile(
-            "panel",
+        let names = parameter_names(fcs);
+        let (population, indices, parent_count) = match self.selected_gate {
+            Some(i) => match self.pop_indices.get(i) {
+                Some(idxs) if !idxs.is_empty() => {
+                    let name = self
+                        .gates
+                        .get(i)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "Population".to_string());
+                    let parent_count = self
+                        .gates
+                        .get(i)
+                        .and_then(|g| g.parent)
+                        .and_then(|p| self.pop_indices.get(p).map(|v| v.len()));
+                    (name, idxs.clone(), parent_count)
+                }
+                _ => ("All events".to_string(), (0..total_count).collect(), None),
+            },
+            None => ("All events".to_string(), (0..total_count).collect(), None),
+        };
+        if total_count == 0 {
+            return Vec::new();
+        }
+        let mut profile = crate::statistics::compute_profile(
+            &population,
             &fcs.data,
             &indices,
             &names,
             parent_count,
             Some(total_count),
-        )]
+        );
+        // The computed table follows the configured statistic sets: adding a
+        // statistic to a set makes it appear here. With no sets defined the full
+        // profile is shown, so the panel is still useful straight after loading.
+        let configured: Vec<crate::statistics::Statistic> = self
+            .statistic_sets
+            .iter()
+            .flat_map(|set| set.stats.iter().map(|spec| spec.statistic.clone()))
+            .collect();
+        if !configured.is_empty() {
+            profile
+                .stats
+                .retain(|row| configured.contains(&row.statistic));
+        }
+        vec![profile]
     }
 
+    #[cfg(test)]
     fn stats_panel_rows(&self) -> Vec<crate::statistics::PopulationStat> {
         self.stats_panel_profiles()
             .into_iter()
@@ -3867,7 +4363,24 @@ impl FlowersApp {
             .collect()
     }
 
+    /// Add a new statistic set.
+    ///
+    /// The first set is the ready-made "Basic" preset so the panel immediately
+    /// shows something useful; later sets start empty and are filled with the
+    /// per-set "Add statistic…" menu.
+    fn stats_panel_new_set(&mut self) {
+        if self.statistic_sets.is_empty() {
+            self.statistic_sets
+                .push(crate::statistics::StatisticSet::basic());
+        } else {
+            let name = format!("Set {}", self.statistic_sets.len() + 1);
+            self.statistic_sets
+                .push(crate::statistics::StatisticSet::new(&name, Vec::new()));
+        }
+    }
+
     /// Add a copy of a statistic set to the panel.
+    #[cfg(test)]
     fn stats_panel_add_set(&mut self, index: usize) {
         if let Some(set) = self.statistic_sets.get(index) {
             self.statistic_sets.push(set.clone());
@@ -5650,50 +6163,14 @@ impl FlowersApp {
             );
         });
 
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("X scale:").small().color(p.muted));
-            for scale in AxisScale::all() {
-                if ui
-                    .selectable_label(st.x_scale == scale, scale.label())
-                    .clicked()
-                {
-                    st.x_scale = scale;
-                    self.popout_auto_range(st);
-                }
-            }
-            ui.label(egui::RichText::new("range:").small().color(p.muted));
-            let span = (st.x_range.1 - st.x_range.0).abs().max(1.0);
-            ui.add(range_drag_value(&mut st.x_range.0, span));
-            ui.add(range_drag_value(&mut st.x_range.1, span));
-            if ui.small_button("−").on_hover_text("Zoom X out").clicked() {
-                zoom_axis_range(&mut st.x_range, &st.x_scale, 1.25);
-            }
-            if ui.small_button("+").on_hover_text("Zoom X in").clicked() {
-                zoom_axis_range(&mut st.x_range, &st.x_scale, 0.8);
-            }
-        });
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Y scale:").small().color(p.muted));
-            for scale in AxisScale::all() {
-                if ui
-                    .selectable_label(st.y_scale == scale, scale.label())
-                    .clicked()
-                {
-                    st.y_scale = scale;
-                    self.popout_auto_range(st);
-                }
-            }
-            ui.label(egui::RichText::new("range:").small().color(p.muted));
-            let span = (st.y_range.1 - st.y_range.0).abs().max(1.0);
-            ui.add(range_drag_value(&mut st.y_range.0, span));
-            ui.add(range_drag_value(&mut st.y_range.1, span));
-            if ui.small_button("−").on_hover_text("Zoom Y out").clicked() {
-                zoom_axis_range(&mut st.y_range, &st.y_scale, 1.25);
-            }
-            if ui.small_button("+").on_hover_text("Zoom Y in").clicked() {
-                zoom_axis_range(&mut st.y_range, &st.y_scale, 0.8);
-            }
-        });
+        // Axis controls: three buttons per axis (Log / Linear / Advanced
+        // options). The dropdown holds the remaining transforms plus the range
+        // and zoom tools, which keeps the plot area large in this window.
+        let x_action = popout_axis_row(ui, p, st, true);
+        let y_action = popout_axis_row(ui, p, st, false);
+        if x_action != AxisAction::None || y_action != AxisAction::None {
+            self.popout_auto_range(st);
+        }
 
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Dot colour:").small().color(p.muted));
@@ -5732,6 +6209,34 @@ impl FlowersApp {
                 ui.radio_value(&mut st.new_gate_type, gt, gt.label());
             }
         });
+
+        // Gate chooser. Gates drawn on the same axes overlap, and the one
+        // underneath cannot be clicked on the plot, so it can be selected here
+        // and then moved with the transform buttons or by dragging it.
+        if let (Some(x), Some(y)) = (st.x_param, st.y_param) {
+            let entries = gates_on_pair(&self.gates, &self.children, x, y);
+            if !entries.is_empty() {
+                egui::CollapsingHeader::new(format!("Gates on this plot ({})", entries.len()))
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        let counts: Vec<usize> = self.pop_indices.iter().map(|v| v.len()).collect();
+                        egui::ScrollArea::vertical()
+                            .max_height(130.0)
+                            .show(ui, |ui| {
+                                if let Some(gi) = popout_gate_list_ui(
+                                    ui,
+                                    p,
+                                    &self.gates,
+                                    &entries,
+                                    &counts,
+                                    st.selected_gate,
+                                ) {
+                                    st.selected_gate = Some(gi);
+                                }
+                            });
+                    });
+            }
+        }
 
         // Manipulation buttons for the gate selected inside the popout.
         if let Some(gi) = st.selected_gate
@@ -6116,6 +6621,197 @@ impl FlowersApp {
         let mut cfg = cfg;
         self.apply_transpose_to_cfg(&mut cfg);
         cfg
+    }
+
+    /// Plot configuration for one population thumbnail in the main-window grid.
+    ///
+    /// `gate == None` is the whole sample. The ranges are fitted to that
+    /// population rather than the global view so each thumbnail frames its own
+    /// events. The global transpose setting is deliberately ignored here: the
+    /// grid is a gallery of populations, and each thumbnail keeps the gate's own
+    /// X/Y axes.
+    fn population_plot_cfg(&self, gate: Option<usize>, x: usize, y: usize) -> Option<PlotCfg> {
+        let fcs = self.current_fcs()?;
+        let points = match gate {
+            Some(i) => self.population_points_xy(i, x, y),
+            None => (0..fcs.event_count)
+                .map(|e| [f64::from(fcs.data[[e, x]]), f64::from(fcs.data[[e, y]])])
+                .collect(),
+        };
+        let xs: Vec<f64> = points.iter().map(|p| p[0]).collect();
+        let ys: Vec<f64> = points.iter().map(|p| p[1]).collect();
+        let x_range = bounds_for(&xs, &self.x_scale);
+        let y_range = bounds_for(&ys, &self.y_scale);
+        let selected = self
+            .selected_gate
+            .filter(|&g| self.gates.get(g).map(|g| (g.x_idx, g.y_idx)) == Some((x, y)));
+        let cfg = PlotCfg {
+            points,
+            x_range,
+            y_range,
+            x_scale: self.x_scale.clone(),
+            y_scale: self.y_scale.clone(),
+            point_color: self.point_color,
+            gradient: self.gradient,
+            view: self.view_mode,
+            density_map: self.density_map,
+            data_overlays: Vec::new(),
+            contour_levels: self.contour_levels,
+            gates: self.gate_visuals_for(x, y, x_range, y_range, selected),
+            handles: Vec::new(),
+            x_label: format!(
+                "{} ({})",
+                param_display_name(fcs, x),
+                scale_label(&self.x_scale)
+            ),
+            y_label: if matches!(self.view_mode, ViewMode::Histogram) {
+                "Count".to_string()
+            } else {
+                format!(
+                    "{} ({})",
+                    param_display_name(fcs, y),
+                    scale_label(&self.y_scale)
+                )
+            },
+            interactive: false,
+            line_preview: false,
+            smoothing: self.plot_smoothing,
+            resolution: self.plot_resolution,
+            outlier_clip_percent: self.outlier_clip_percent,
+            large_dots: self.large_dots,
+            grid: self.show_grid,
+            medians: self.show_medians,
+            show_event_numbers: self.show_event_numbers,
+            show_names_frequencies: self.show_names_frequencies,
+            notation: self.tick_notation,
+            show_axis_labels: self.show_axis_labels,
+            show_ticks: self.show_ticks,
+            show_numbers: self.show_numbers,
+            axis_histograms: self.show_axis_histograms,
+            transposed: false,
+        };
+        Some(cfg)
+    }
+
+    /// Main-window grid of every population.
+    ///
+    /// This replaces the need to open one detached window per gate just to see
+    /// what the analysis contains. Clicking a thumbnail selects that gate;
+    /// "Open" still opens the full detached window for detailed editing.
+    fn population_grid_ui(&mut self, ui: &mut egui::Ui, p: Palette) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("All populations").strong().color(p.ink));
+            ui.label(
+                egui::RichText::new(
+                    "Every gate shown on its own axes. Click a plot to select that population.",
+                )
+                .small()
+                .color(p.muted),
+            );
+            if secondary_button(ui, p, "Single plot").clicked() {
+                self.population_grid = false;
+            }
+        });
+        ui.add_space(8.0);
+
+        let mut entries: Vec<(Option<usize>, usize)> = vec![(None, 0)];
+        entries.extend(
+            gate_hierarchy_order(&self.gates, &self.children)
+                .into_iter()
+                .map(|(gate, depth)| (Some(gate), depth)),
+        );
+
+        let cell_w = 300.0;
+        let cell_h = 280.0;
+        let spacing = ui.spacing().item_spacing.x;
+        let columns = ((ui.available_width() + spacing) / (cell_w + spacing))
+            .floor()
+            .max(1.0) as usize;
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for chunk in entries.chunks(columns) {
+                ui.horizontal_top(|ui| {
+                    for &(gate, depth) in chunk {
+                        ui.allocate_ui(egui::vec2(cell_w, cell_h), |ui| {
+                            self.population_thumb(ui, p, gate, depth);
+                        });
+                    }
+                });
+                ui.add_space(8.0);
+            }
+        });
+    }
+
+    /// One population thumbnail inside the main-window grid.
+    fn population_thumb(
+        &mut self,
+        ui: &mut egui::Ui,
+        p: Palette,
+        gate: Option<usize>,
+        depth: usize,
+    ) {
+        let name = gate
+            .and_then(|i| self.gates.get(i))
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "All events".to_string());
+        let count = match gate {
+            Some(i) => self.pop_indices.get(i).map(|v| v.len()).unwrap_or(0),
+            None => self.current_fcs().map(|f| f.event_count).unwrap_or(0),
+        };
+        let (x, y) = match gate.and_then(|i| self.gates.get(i)) {
+            Some(g) => (g.x_idx, g.y_idx),
+            None => (self.x_param.unwrap_or(0), self.y_param.unwrap_or(0)),
+        };
+
+        egui::Frame::none()
+            .fill(p.surface)
+            .stroke(egui::Stroke::new(1.0_f32, p.border))
+            .rounding(6.0)
+            .inner_margin(egui::Margin::same(6.0))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space((depth as f32) * 8.0);
+                    let selected = self.selected_gate == gate;
+                    if ui
+                        .selectable_label(selected, egui::RichText::new(&name).strong())
+                        .clicked()
+                    {
+                        self.selected_gate = gate;
+                        self.sync_name_edit();
+                        if let Some(g) = gate.and_then(|i| self.gates.get(i)) {
+                            self.x_param = Some(g.x_idx);
+                            self.y_param = Some(g.y_idx);
+                            self.update_plot_points();
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(i) = gate
+                            && ui.small_button("Open").clicked()
+                        {
+                            self.open_popout(i);
+                        }
+                        ui.label(
+                            egui::RichText::new(count.to_string())
+                                .small()
+                                .color(p.muted),
+                        );
+                    });
+                });
+
+                if let Some(cfg) = self.population_plot_cfg(gate, x, y) {
+                    let mut inter = PlotInteraction::default();
+                    show_plot(
+                        ui,
+                        &format!(
+                            "population_thumb_{}",
+                            gate.map(|g| g.to_string())
+                                .unwrap_or_else(|| "all".to_string())
+                        ),
+                        &cfg,
+                        &mut inter,
+                    );
+                }
+            });
     }
 
     /// Build the SVG for the current main plot, with gate overlays.
@@ -7340,7 +8036,7 @@ fn gate_tree_ui(
                 actions.push(TreeAction::Select(node));
             }
             if ui
-                .small_button("◧")
+                .small_button("↗")
                 .on_hover_text("Show in detached window")
                 .clicked()
             {
@@ -7412,12 +8108,17 @@ impl FlowersApp {
         });
 
         // The window's X button must go through the same unsaved-changes
-        // prompt as File ▸ Quit.
+        // prompt as File › Quit.
         self.handle_window_close_request(ctx);
 
         // ----- 3D view (V3) -----
         if self.view3d_open {
             let mut open = self.view3d_open;
+            // The in-window Close button and the title-bar X both have to end
+            // up in the same field. The button sets this flag instead of the
+            // field directly, because the field is overwritten from `open`
+            // after the window is shown.
+            let mut close_clicked = false;
             egui::Window::new("3D View")
                 .open(&mut open)
                 .collapsible(false)
@@ -7536,7 +8237,7 @@ impl FlowersApp {
                                 .prefix("frames: "),
                         );
                         if ui.button("Close").clicked() {
-                            self.view3d_open = false;
+                            close_clicked = true;
                         }
                     });
 
@@ -7637,12 +8338,20 @@ impl FlowersApp {
                         }
                     }
                 });
+            // `open` starts as the field value but egui only updates the local
+            // copy when the title-bar X is pressed, so it has to be written back
+            // or the window would never actually close. The in-window Close
+            // button is folded in through `close_clicked`.
+            self.view3d_open = open && !close_clicked;
         }
 
         // ----- Statistics panel (S5) -----
-        // Window listing the statistic sets configured for the current analysis,
-        // with add / copy / remove / export actions and per-set statistics.
+        // A statistic set is a reusable list of statistics (count, mean, …).
+        // The panel edits those sets and, below them, shows the values computed
+        // for the current population (or the whole sample when no gate is
+        // selected).
         if self.stats_panel_open {
+            let p = self.palette();
             egui::Window::new("Statistics")
                 .collapsible(false)
                 .resizable(true)
@@ -7650,25 +8359,19 @@ impl FlowersApp {
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.heading("Statistics");
+                    ui.label(
+                        egui::RichText::new(
+                            "A statistic set is a reusable list of statistics. The computed \
+                             table below shows the statistics used by any set, for the selected \
+                             population.",
+                        )
+                        .small()
+                        .color(p.muted),
+                    );
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         if ui.button("Add statistic set").clicked() {
-                            let count = self.statistic_sets.len();
-                            if count > 0 {
-                                self.stats_panel_add_set(count - 1);
-                            }
-                        }
-                        if ui.button("Copy set").clicked() {
-                            let count = self.statistic_sets.len();
-                            if count > 0 {
-                                self.stats_panel_copy_set(count - 1);
-                            }
-                        }
-                        if ui.button("Remove set").clicked() {
-                            let count = self.statistic_sets.len();
-                            if count > 0 {
-                                self.stats_panel_remove_set(count - 1);
-                            }
+                            self.stats_panel_new_set();
                         }
                         if ui.button("Export sets").clicked()
                             && let Err(message) = self.stats_panel_export()
@@ -7703,26 +8406,62 @@ impl FlowersApp {
                         }
                     });
                     ui.add_space(6.0);
+
                     if self.statistic_sets.is_empty() {
-                        ui.weak("No statistic sets yet. Add one to start computing.");
+                        ui.label(
+                            egui::RichText::new(
+                                "No statistic sets yet — press “Add statistic set” to start \
+                                 with a Basic set.",
+                            )
+                            .small()
+                            .color(p.muted),
+                        );
                     }
+
+                    // Edit each set. Actions are collected and applied after
+                    // the loop so the list is not mutated while it is drawn.
+                    let mut set_action: Option<(usize, SetAction)> = None;
                     for i in 0..self.statistic_sets.len() {
                         let set_name = self.statistic_sets[i].name.clone();
-                        let stat_count = self.statistic_sets[i].stats.len();
-                        ui.collapsing(set_name, |ui| {
-                            let rows = self.stats_panel_rows();
-                            for row in rows {
-                                ui.label(format!(
-                                    "  {} / {} = {:.4}",
-                                    row.parameter,
-                                    crate::statistics::statistic_label(&row.statistic),
-                                    row.value
-                                ));
-                            }
-                            ui.weak(format!("{stat_count} statistic(s) configured"));
-                        });
-                        if ui.small_button("✖").clicked() {
-                            self.stats_panel_remove_set(i);
+                        egui::CollapsingHeader::new(set_name)
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                let action = statistic_set_ui(ui, p, &mut self.statistic_sets[i]);
+                                if action != SetAction::None {
+                                    set_action = Some((i, action));
+                                }
+                            });
+                    }
+                    match set_action {
+                        Some((i, SetAction::Copy)) => self.stats_panel_copy_set(i),
+                        Some((i, SetAction::Remove)) => self.stats_panel_remove_set(i),
+                        _ => {}
+                    }
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    let profiles = self.stats_panel_profiles();
+                    match profiles.first() {
+                        Some(profile) => {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Computed for:").strong());
+                                ui.label(&profile.name);
+                                ui.label(
+                                    egui::RichText::new(format!("{} events", profile.count))
+                                        .small()
+                                        .color(p.muted),
+                                );
+                            });
+                            ui.add_space(4.0);
+                            statistics_table_ui(ui, p, &profile.stats);
+                        }
+                        None => {
+                            ui.label(
+                                egui::RichText::new("Load an FCS file to compute statistics.")
+                                    .small()
+                                    .color(p.muted),
+                            );
                         }
                     }
                 });
@@ -7733,59 +8472,68 @@ impl FlowersApp {
         // exports them, so users have an explicit way to see / export the
         // per-population data instead of hunting through plots.
         if self.table_open {
+            let p = self.palette();
             egui::Window::new("Table Editor")
                 .collapsible(false)
                 .resizable(true)
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.heading("Table Editor");
-                        ui.add_space(4.0);
-                        if self.statistic_sets.is_empty() {
-                            ui.weak(
-                                "No statistic sets yet. Add one from the Statistics panel first.",
+                    ui.heading("Table Editor");
+                    ui.add_space(4.0);
+                    let profiles = self.stats_panel_profiles();
+                    match profiles.first() {
+                        Some(profile) => {
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new("Population:").strong());
+                                ui.label(&profile.name);
+                                ui.label(
+                                    egui::RichText::new(format!("{} events", profile.count))
+                                        .small()
+                                        .color(p.muted),
+                                );
+                            });
+                            ui.add_space(6.0);
+                            statistics_table_ui(ui, p, &profile.stats);
+                        }
+                        None => {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Load an FCS file to populate the table with statistics.",
+                                )
+                                .small()
+                                .color(p.muted),
                             );
                         }
-                        ui.add_space(4.0);
-                        let stats = self.stats_panel_rows();
-                        for row in stats {
-                            ui.label(format!(
-                                "{} / {} = {}",
-                                row.parameter,
-                                crate::statistics::statistic_label(&row.statistic),
-                                row.value
-                            ));
-                        }
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            if ui.button("Export statistics CSV").clicked() {
-                                let sample_name = self
-                                    .current_sample
-                                    .map(|i| self.samples[i].id.clone())
-                                    .unwrap_or_else(|| "sample".to_string());
-                                let profiles = self.stats_panel_profiles();
-                                let rows = statistics_rows(&sample_name, &profiles);
-                                if let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("CSV", &["csv"])
-                                    .set_file_name("statistics.csv")
-                                    .save_file()
-                                {
-                                    if let Err(e) = write_statistics_csv(&path, &rows) {
-                                        self.set_status(format!("Export failed: {e}"));
-                                    } else {
-                                        self.set_status(format!(
-                                            "Exported {} statistics rows to {}",
-                                            rows.len(),
-                                            path.display()
-                                        ));
-                                    }
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui.button("Export statistics CSV").clicked() {
+                            let sample_name = self
+                                .current_sample
+                                .map(|i| self.samples[i].id.clone())
+                                .unwrap_or_else(|| "sample".to_string());
+                            let profiles = self.stats_panel_profiles();
+                            let rows = statistics_rows(&sample_name, &profiles);
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("CSV", &["csv"])
+                                .set_file_name("statistics.csv")
+                                .save_file()
+                            {
+                                if let Err(e) = write_statistics_csv(&path, &rows) {
+                                    self.set_status(format!("Export failed: {e}"));
+                                } else {
+                                    self.set_status(format!(
+                                        "Exported {} statistics rows to {}",
+                                        rows.len(),
+                                        path.display()
+                                    ));
                                 }
                             }
-                            if ui.button("Close").clicked() {
-                                self.table_open = false;
-                            }
-                        });
+                        }
+                        if ui.button("Close").clicked() {
+                            self.table_open = false;
+                        }
                     });
                 });
         }
@@ -7935,13 +8683,6 @@ impl FlowersApp {
             .frame(panel_frame(p))
             .show(ctx, |ui| {
                 header_bar(ui, p, |ui| {
-                    // Standalone top-bar tools (moved out of the File menu).
-                    if ui.button("Statistics Panel…").clicked() {
-                        self.open_stats_panel();
-                    }
-                    if ui.button("Table Editor…").clicked() {
-                        self.table_open = true;
-                    }
                     // File dropdown.
                     ui.menu_button("File", |ui| {
                         if ui.button("Load FCS").clicked() {
@@ -8097,11 +8838,6 @@ impl FlowersApp {
                         }
                     });
 
-                    // Layout Editor (standalone button).
-                    if ui.button("Layout Editor").clicked() {
-                        self.layout_open = true;
-                    }
-
                     // Compensation editor.
                     ui.menu_button("Compensation", |ui| {
                         if ui.button("Open compensation editor…").clicked() {
@@ -8130,6 +8866,32 @@ impl FlowersApp {
                         }
                     });
 
+                    // Standalone editor panels, grouped together. Statistics,
+                    // Table and Layout are the three dockable editor tools, so
+                    // they live next to each other after the menus.
+                    ui.separator();
+                    if ui.button("Statistics Panel…").clicked() {
+                        self.open_stats_panel();
+                    }
+                    if ui.button("Table Editor…").clicked() {
+                        self.table_open = true;
+                    }
+                    if ui.button("Layout Editor").clicked() {
+                        self.layout_open = true;
+                    }
+
+                    ui.separator();
+                    if ui
+                        .selectable_label(self.population_grid, "All populations")
+                        .on_hover_text(
+                            "Show every population as a plot in the main window instead of \
+                             opening detached windows",
+                        )
+                        .clicked()
+                    {
+                        self.population_grid = !self.population_grid;
+                    }
+
                     ui.separator();
                     ui.label("flowers — flow cytometry analysis");
                 });
@@ -8138,7 +8900,10 @@ impl FlowersApp {
         // ----- Left sidebar: Samples card + Gates card + Controls card -----
         let p = self.palette();
         egui::SidePanel::left("sidebar")
-            .default_width(280.0)
+            // `exact_width` rather than `default_width`: egui restores a
+            // resizable panel's last width, and if the first frame ever ran
+            // with a tiny viewport the panel stays stuck at a few pixels wide.
+            .exact_width(260.0)
             .frame(panel_frame(p))
             .show(ctx, |ui| {
                 // The sidebar can grow past the window (many samples / gates /
@@ -9184,7 +9949,9 @@ impl FlowersApp {
         // ----- Right panel: population card + cross-sample summary -----
         let p = self.palette();
         egui::SidePanel::right("populations")
-            .default_width(330.0)
+            // See the left panel: a restored stale width can squeeze this panel
+            // to a sliver on startup, so pin the width instead.
+            .exact_width(300.0)
             // Shared panel frame so the population cards sit the same
             // distance from the window edges as every other card.
             .frame(panel_frame(p))
@@ -9387,7 +10154,7 @@ impl FlowersApp {
                             );
                             ui.label(
                                 egui::RichText::new(
-                                    "Use File ▸ Load FCS, or click Import FCS on the left.",
+                                    "Use File › Load FCS, or click Import FCS on the left.",
                                 )
                                 .color(p.muted)
                                 .small(),
@@ -9433,6 +10200,12 @@ impl FlowersApp {
                             );
                             ui.add_space(8.0);
                         });
+                    });
+                    return;
+                }
+                if self.population_grid {
+                    card_frame(p).show(ui, |ui| {
+                        self.population_grid_ui(ui, p);
                     });
                     return;
                 }
@@ -9526,15 +10299,26 @@ impl FlowersApp {
                     ui.add_space(8.0);
 
                     // --- Plot area ---
-                    // Reserve room for the footer row before the scroll area
-                    // claims the remaining height. Without this the plot fills
-                    // every pixel left in the card and pushes the footer (and
-                    // the card's bottom border) past the bottom of the window.
-                    let footer_height = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                    let plot_height = (ui.available_height() - footer_height - 8.0).max(0.0);
-                    egui::ScrollArea::both()
-                        .max_height(plot_height)
-                        .show(ui, |ui| {
+                    // Reserve room for both footer rows (hints + zoom controls)
+                    // and give the plot an exact rect. A ScrollArea here made
+                    // the plot size itself from an unbounded content height, so
+                    // the card grew past the bottom of the window and the
+                    // footer was pushed out of view.
+                    let mut footer_height = 2.0 * ui.spacing().interact_size.y
+                        + 2.0 * ui.spacing().item_spacing.y
+                        + 8.0
+                        // Allowance for the hints row wrapping onto a second line
+                        // in a narrow central panel.
+                        + ui.spacing().interact_size.y;
+                    if matches!(self.view_mode, ViewMode::Pseudocolor | ViewMode::Zebra) {
+                        footer_height += ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                    }
+                    let plot_height = (ui.available_height() - footer_height - 8.0).max(120.0);
+                    let plot_width = ui.available_width();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(plot_width, plot_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
                             let mut inter = PlotInteraction {
                                 drag_start: self.interact.drag_start,
                                 drag_current: self.interact.drag_current,
@@ -9583,7 +10367,8 @@ impl FlowersApp {
                                     InteractOutcome::Click(p) => self.create_click_gate(p, None),
                                 }
                             }
-                        });
+                        },
+                    );
                     ui.add_space(8.0);
 
                     // Density-map legend for pseudocolour / zebra views.
@@ -9597,13 +10382,17 @@ impl FlowersApp {
                     }
 
                     // --- Plot footer: hints + options ---
-                    ui.horizontal(|ui| {
+                    // The hints and the axis/zoom controls are kept on separate
+                    // rows. On a 1366×768 laptop panel a single row overflowed
+                    // and the right-aligned event count landed on top of the
+                    // hints, so both rows wrap instead of colliding.
+                    ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new("Draw hints").small().color(p.muted));
                         ui.add_space(6.0);
                         ui.label(egui::RichText::new("drag").small().strong().color(p.ink));
-                        ui.label(" to draw a gate  ");
+                        ui.label(" to draw a gate");
                         ui.label(egui::RichText::new("click").small().strong().color(p.ink));
-                        ui.label(" to place a quadrant/bilinear gate  ");
+                        ui.label(" to place a quadrant/bilinear gate");
                         if self.transpose {
                             ui.label(
                                 egui::RichText::new("axes transposed — gate editing paused")
@@ -9611,7 +10400,9 @@ impl FlowersApp {
                                     .color(p.muted),
                             );
                         }
-                        ui.add_space(10.0);
+                    });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("X").small().strong().color(p.muted));
                         if ui.small_button("−").on_hover_text("Zoom X out").clicked() {
                             zoom_axis_range(&mut self.x_range, &self.x_scale, 1.25);
@@ -9768,7 +10559,7 @@ impl FlowersApp {
                             action = Some(CompAction::Identity);
                         }
                         if secondary_button(ui, p, "Invert")
-                            .on_hover_text("Invert the matrix (spillover → compensation)")
+                            .on_hover_text("Invert the matrix (spillover -> compensation)")
                             .clicked()
                         {
                             action = Some(CompAction::Invert);
@@ -10213,6 +11004,119 @@ mod tests {
     }
 
     #[test]
+    fn click_placed_tools_win_over_the_gate_under_the_cursor() {
+        // A detached window always shows the population's own gate, and that
+        // gate covers most of the plot. Clicking there with the quadrant tool
+        // must still place a gate instead of only selecting the covering one.
+        let covering = GateDef {
+            name: "all".into(),
+            x_idx: 0,
+            y_idx: 1,
+            parent: None,
+            kind: GateKind::Rect {
+                x_min: 0.0,
+                x_max: 10.0,
+                y_min: 0.0,
+                y_max: 10.0,
+                angle: 0.0,
+            },
+            color: egui::Color32::WHITE,
+            owner: None,
+            apply_to_all: true,
+        };
+        let gates = vec![covering];
+        let inter = PlotInteraction {
+            clicked: Some([5.0, 5.0]),
+            ..Default::default()
+        };
+        let mut interact = Interact::default();
+
+        let outcome = drive_interact(
+            &mut interact,
+            &inter,
+            &gates,
+            None,
+            NewGateType::Quadrant,
+            0.02,
+        );
+        assert!(matches!(outcome, Some(InteractOutcome::Click([5.0, 5.0]))));
+
+        // With a drawing tool active the click still selects the gate body.
+        let outcome = drive_interact(&mut interact, &inter, &gates, None, NewGateType::Rect, 0.02);
+        assert!(matches!(outcome, Some(InteractOutcome::Select(0))));
+    }
+
+    #[test]
+    fn gates_on_pair_lists_the_plot_gates_in_hierarchy_order() {
+        let gate = |name: &str, y_idx: usize, parent: Option<usize>| GateDef {
+            name: name.into(),
+            x_idx: 0,
+            y_idx,
+            parent,
+            kind: GateKind::Rect {
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: 0.0,
+                y_max: 1.0,
+                angle: 0.0,
+            },
+            color: egui::Color32::WHITE,
+            owner: None,
+            apply_to_all: true,
+        };
+        let gates = vec![
+            gate("root", 1, None),
+            gate("child", 1, Some(0)),
+            gate("other plot", 2, None),
+            gate("grandchild", 1, Some(2)),
+            gate("great-grandchild", 1, Some(3)),
+        ];
+        let children = vec![vec![1], vec![], vec![3], vec![4], vec![]];
+
+        // Only the gates drawn on (0, 1) are listed, indented by their depth in
+        // the real hierarchy even when a parent lives on another plot: the
+        // grandchild's parent is the root on (0, 2), so it sits at depth 1, and
+        // its own child at depth 2.
+        assert_eq!(
+            gates_on_pair(&gates, &children, 0, 1),
+            vec![(0, 0), (1, 1), (3, 1), (4, 2)]
+        );
+        assert_eq!(gates_on_pair(&gates, &children, 0, 2), vec![(2, 0)]);
+        assert!(gates_on_pair(&gates, &children, 9, 9).is_empty());
+    }
+
+    #[test]
+    fn gate_hierarchy_order_is_depth_first() {
+        let gate = |name: &str, parent: Option<usize>| GateDef {
+            name: name.into(),
+            x_idx: 0,
+            y_idx: 1,
+            parent,
+            kind: GateKind::Rect {
+                x_min: 0.0,
+                x_max: 1.0,
+                y_min: 0.0,
+                y_max: 1.0,
+                angle: 0.0,
+            },
+            color: egui::Color32::WHITE,
+            owner: None,
+            apply_to_all: true,
+        };
+        let gates = vec![
+            gate("root", None),
+            gate("child", Some(0)),
+            gate("other root", None),
+            gate("grandchild", Some(2)),
+        ];
+        let children = vec![vec![1], vec![], vec![3], vec![]];
+        assert_eq!(
+            gate_hierarchy_order(&gates, &children),
+            vec![(0, 0), (1, 1), (2, 0), (3, 1)]
+        );
+    }
+
+    #[test]
     fn gate_at_finds_any_gate_body_and_prefers_the_selection() {
         let rect = |min: f64, max: f64| GateKind::Rect {
             x_min: min,
@@ -10600,6 +11504,17 @@ mod tests {
         app.stats_panel_open = false;
         app.stats_panel_remove_set(0);
 
+        // The panel's "Add statistic set" button creates the Basic preset on
+        // first use, then empty sets, so it always does something visible.
+        app.stats_panel_new_set();
+        assert_eq!(app.statistic_sets.len(), 1);
+        assert_eq!(app.statistic_sets[0].name, "Basic");
+        assert!(!app.statistic_sets[0].stats.is_empty());
+        app.stats_panel_new_set();
+        assert_eq!(app.statistic_sets.len(), 2);
+        assert!(app.statistic_sets[1].stats.is_empty());
+        app.statistic_sets.clear();
+
         // Add a set, copy it (two entries), then remove one.
         app.statistic_sets
             .push(crate::statistics::StatisticSet::new(
@@ -10619,7 +11534,7 @@ mod tests {
     }
 
     #[test]
-    fn statistics_panel_rows_are_empty_without_a_population() {
+    fn statistics_panel_profiles_all_events_without_a_selection() {
         let dir = std::path::Path::new("/tmp/opencode");
         std::fs::create_dir_all(dir).unwrap();
         let fcs_path = dir.join("stats_panel2.fcs");
@@ -10627,8 +11542,42 @@ mod tests {
 
         let mut app = FlowersApp::default();
         app.load_file(&fcs_path);
-        // No population selected and no cached events yet.
-        assert!(app.stats_panel_rows().is_empty());
+        // With no population selected the whole sample is profiled, so the
+        // panel and table editor are populated as soon as a file is loaded.
+        let profiles = app.stats_panel_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "All events");
+        assert_eq!(profiles[0].count, 12);
+        assert!(!profiles[0].stats.is_empty());
+        assert!(!app.stats_panel_rows().is_empty());
+    }
+
+    #[test]
+    fn statistics_rows_follow_the_configured_sets() {
+        let dir = std::path::Path::new("/tmp/opencode");
+        std::fs::create_dir_all(dir).unwrap();
+        let fcs_path = dir.join("stats_panel3.fcs");
+        write_fcs(&fcs_path, 12, 2);
+
+        let mut app = FlowersApp::default();
+        app.load_file(&fcs_path);
+        app.statistic_sets
+            .push(crate::statistics::StatisticSet::new(
+                "Only mean",
+                vec![crate::statistics::StatSpec {
+                    parameter: None,
+                    statistic: crate::statistics::Statistic::Mean,
+                    expected: None,
+                    heat: None,
+                }],
+            ));
+        let rows = app.stats_panel_rows();
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter()
+                .all(|row| row.statistic == crate::statistics::Statistic::Mean),
+            "only statistics named by a set should be computed"
+        );
     }
 
     #[test]

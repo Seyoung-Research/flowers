@@ -30,11 +30,12 @@ written in Rust. This guide explains how to use the graphical user interface
     - [SVG Export](#svg-export)
     - [Raster Image Export (PNG/JPEG/TIFF)](#raster-image-export-pngjpegtiff)
     - [CSV Export](#csv-export)
-14. [Table Editor](#table-editor)
-15. [Layout Editor](#layout-editor)
+14. [Statistics Panel](#statistics-panel)
+15. [Table Editor](#table-editor)
+16. [Layout Editor](#layout-editor)
     - [Axis Label Styling](#axis-label-styling)
-16. [Workspaces](#workspaces)
-17. [Command-Line Interface](#command-line-interface)
+17. [Workspaces](#workspaces)
+18. [Command-Line Interface](#command-line-interface)
 
 ---
 
@@ -127,11 +128,11 @@ Open **Axis options** in the left sidebar:
     pixel.
   - **Click** a value to type an exact number. Both plain (`250000`) and
     scientific (`2.5e5`, `1e7`) input are accepted.
-- **− / +** buttons: Each axis bound (minimum and maximum) has its own **−** and
-  **+** button beside its number, so the minimum and the maximum can be adjusted
-  independently. The original zoom buttons still widen/narrow the whole range
-  about its centre, similar to FlowJo. On a log axis the zoom steps are even in
-  decades.
+- **− / +** buttons: In a detached window, open **Advanced options (X)** or
+  **Advanced options (Y)**: each end of the axis (minimum and maximum) has its own
+  **−** and **+** button, so the minimum and the maximum can be adjusted
+  independently. The zoom buttons still widen/narrow the whole range about its
+  centre, similar to FlowJo. On a log axis the zoom steps are even in decades.
 - **Auto**: Click **Auto** next to an axis to fit it to the data.
 
 Axis tick labels use compact scientific notation for large values (e.g. `7e4`
@@ -259,7 +260,7 @@ Gates are organised in a tree shown in the right panel:
 - Select a gate in the tree to view and edit its details in the bottom panel.
 - Use the **Parent** dropdown to re-parent a gate (only earlier gates are
   offered, keeping the hierarchy acyclic).
-- Click **◧** to open the gate's population in a detached window.
+- Click **↗** to open the gate's population in a detached window.
 - Click **✖** to delete a gate (children are re-parented to the deleted gate's
   parent).
 
@@ -279,20 +280,27 @@ gates show both.
 ## Detached Population Windows
 
 1. Select a gate in the tree.
-2. Click **Open detached window** (or click **◧** next to the gate in the tree).
+2. Click **Open detached window** (or click **↗** next to the gate in the tree).
 3. A new window opens showing only that population's events.
 
 The detached window has the full plotting and gating toolkit:
 
 - X/Y parameter selection
-- Linear/log scales and editable ranges
-- Auto range
+- **Log**, **Linear**, and **Advanced options** per axis. The dropdown holds the
+  remaining transforms plus the range editor, **Auto**, and independent **− / +**
+  buttons for the **minimum** and **maximum** of that axis.
 - Dot colour and gradient
 - Dots / Contour / Histogram view
 - Gate drawing and manipulation on the population
-- All transform buttons
+- **Gates on this plot** list: when several gates overlap, pick the one you want
+  from this hierarchy list and then drag it or use the arrow buttons. A quadrant
+  or bilinear gate is placed wherever you **click** on the plot.
 - An **Add this plot to layout** button that sends the detached view straight
   into the [Layout Editor](#layout-editor)
+
+Use **All populations** in the top bar to see every gate as a plot in the main
+window instead of opening a detached window for each one. Click a thumbnail to
+select that population; **Open** still opens the full detached window.
 
 Close the window to return to the main view.
 
@@ -461,18 +469,37 @@ cargo run -- mask data/D1_WT.fcs MyMask mask.txt
 
 ---
 
+## Statistics Panel
+
+Open **Statistics Panel…** from the top bar (grouped with **Table Editor…** and
+**Layout Editor**). The panel has two parts:
+
+1. **Statistic sets** — reusable lists of statistics. **Add statistic set**
+   creates a ready-made **Basic** set the first time (count, percentages, mean,
+   median, standard deviation, CV, geometric mean, min and max). Later presses add
+   empty sets. Use **Add statistic…** inside a set to append a statistic, and the
+   **✖** button to remove one. **Copy set** / **Remove set** act on that set.
+2. **Computed statistics** — a table of values for the current population, or
+   for all events when no gate is selected. It is populated as soon as an FCS
+   file is loaded.
+
+**Export sets** writes the statistic-set definitions to JSON; **Export statistics
+CSV** writes the computed values.
+
+---
+
 ## Table Editor
 
-Open **File ▸ Table Editor…** (or click **Table Editor…** in the left sidebar) to
-review the computed statistics as a table and export them.
+Open **Table Editor…** from the top bar (next to **Statistics Panel…** and
+**Layout Editor**) to review the computed statistics as a table and export them.
 
-- The window lists one row per computed statistic for the current population:
-  `parameter / statistic = value`.
+- The table shows one row per statistic for the current population (or all
+  events when no gate is selected): parameter, statistic name, and value.
 - **Export statistics CSV** writes the full statistics table (all loaded samples
   and populations) to a CSV file.
 
-Use the **Statistics** panel to add, edit, and manage statistic sets; the table
-editor reflects the currently computed rows.
+Use the [Statistics Panel](#statistics-panel) to add, edit, and manage statistic
+sets; the table editor reflects the currently computed rows.
 
 ---
 

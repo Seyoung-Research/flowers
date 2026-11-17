@@ -3,6 +3,8 @@ name = "flowers"
 version = "0.2.0"
 edition = "2024"
 description = "Flow cytometry analysis in Rust: open-source flow cytometry analysis tool"
+license = "MIT"
+default-run = "flowers-gui"
 
 [dependencies]
 nom = "7.1"
@@ -50,3 +52,36 @@ path = "src/gui_main.rs"
 [lib]
 name = "flowers"
 path = "src/lib.rs"
+
+# ---------------------------------------------------------------------------
+# Installer / app-bundle packaging
+#
+# macOS `.dmg` (cargo-packager):
+#   cargo install cargo-packager --locked
+#   cargo build --release --bin flowers-gui
+#   cargo packager --release -f dmg     # -> flowers_<version>_<arch>.dmg
+#
+# Windows `.msi` is built with WiX instead, see packaging/windows/build-msi.ps1.
+# ---------------------------------------------------------------------------
+[package.metadata.packager]
+product-name = "flowers"
+identifier = "com.seyoung.flowers"
+description = "Open-source flow cytometry analysis"
+long-description = "flowers is an open-source flow cytometry analysis tool for loading FCS files, drawing gates (rect / ellipse / quadrant / polygon / bilinear), computing population statistics and exporting publication-ready plots."
+category = "Medical"
+authors = ["Seyoung Cha"]
+license-file = "LICENSE"
+icons = [
+  "icons/32x32.png",
+  "icons/128x128.png",
+  "icons/128x128@2x.png",
+  "icons/icon.ico",
+  "icons/icon.icns",
+]
+# Only the GUI is shipped as the desktop app; the `flowers` CLI is still
+# installed by `cargo install`. Without this the packager marks the binary that
+# matches the package name (`flowers`, the CLI) as the main executable.
+binaries = [{ path = "flowers-gui", main = true }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Windows Installer source for flowers.
+
+  Build it with `packaging/windows/build-msi.ps1` (which fills in the version
+  from Cargo.toml), or directly:
+
+      wix build -arch x64 -d Version=0.2.0 -ext WixToolset.UI.wixext `
+                -o target/release/flowers-0.2.0-x64-en-US.msi `
+                packaging/windows/flowers.wxs
+
+  Requires the free WiX v5 CLI, installed with "dotnet tool install -g wix"
+  pinned to version 5.0.2 (see build-msi.ps1 for the exact commands).
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+
+  <!-- Path to the RTF shown on the licence page; build-msi.ps1 generates it
+       from LICENSE. The default keeps a bare `wix build` working. -->
+  <?ifndef LicenseRtf ?>
+  <?define LicenseRtf = "packaging\windows\license.rtf" ?>
+  <?endif?>
+  <Package Name="flowers"
+           Manufacturer="Seyoung Cha"
+           Version="$(var.Version)"
+           UpgradeCode="6B0C4F2A-1D77-4C1E-9E6B-3C5A8F1D2E44"
+           Scope="perMachine"
+           Compressed="yes"
+           Language="1033">
+
+    <SummaryInformation
+        Manufacturer="Seyoung Cha"
+        Description="flowers - open-source flow cytometry analysis" />
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="FlowersIcon" SourceFile="icons\icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="FlowersIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/Seyoung-Research/flowers" />
+
+    <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <!-- The UI shows the licence agreement page. Without this WiX falls back to
+         placeholder "lorem ipsum" text; build-msi.ps1 regenerates the RTF from
+         LICENSE so the dialog always carries the real MIT text. -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+
+    <Feature Id="ProductFeature" Title="flowers" Level="1">
+      <ComponentRef Id="GuiExecutable" />
+      <ComponentRef Id="LicenseNotice" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+  </Package>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="flowers" />
+    </StandardDirectory>
+
+    <!-- The GUI is a single self-contained executable: the logo artwork is
+         embedded in the binary and the FCS files live wherever the user keeps
+         them, so there is nothing else to install. -->
+    <Component Id="GuiExecutable" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="FlowersGuiExe"
+            Source="target\release\flowers-gui.exe"
+            Name="flowers.exe"
+            KeyPath="yes" />
+    </Component>
+
+    <Component Id="LicenseNotice" Directory="INSTALLFOLDER" Guid="*">
+      <File Id="LicenseFile" Source="LICENSE" Name="LICENSE.txt" KeyPath="yes" />
+    </Component>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppStartMenuFolder" Name="flowers">
+        <Component Id="StartMenuShortcut" Guid="*">
+          <Shortcut Id="AppStartMenuShortcut"
+                    Name="flowers"
+                    Description="Open-source flow cytometry analysis"
+                    Target="[INSTALLFOLDER]flowers.exe"
+                    WorkingDirectory="INSTALLFOLDER"
+                    Icon="FlowersIcon" />
+          <RemoveFolder Id="RemoveStartMenuFolder" On="uninstall" />
+          <RegistryValue Root="HKLM" Key="Software\Seyoung\flowers"
+                         Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Fragment>
+
+  <Fragment>
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="*">
+        <Shortcut Id="AppDesktopShortcut"
+                  Name="flowers"
+                  Description="Open-source flow cytometry analysis"
+                  Target="[INSTALLFOLDER]flowers.exe"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="FlowersIcon" />
+        <RegistryValue Root="HKLM" Key="Software\Seyoung\flowers"
+                       Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+  </Fragment>
+</Wix>

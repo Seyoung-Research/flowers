@@ -2,14 +2,21 @@ use eframe::egui;
 use flowers::gui::FlowersApp;
 use std::path::PathBuf;
 
-/// Build an egui window icon from the project `logo.jpeg`.
+/// The project logo, embedded at compile time.
+///
+/// A run-time `std::fs` read of `logo.jpeg` only works from the source tree: a
+/// packaged app (`.app` / `.msi`) does not ship the repository next to the
+/// executable, so the window icon and header mark silently disappeared.
+const LOGO_JPEG: &[u8] = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/logo.jpeg"));
+
+/// Build an egui window icon from the embedded logo.
 ///
 /// The image is decoded to straight (unmultiplied) RGBA, converted to the
 /// premultiplied representation egui expects, resized to a multiple of four
 /// pixels per side (an egui requirement), and returned for the native window.
-fn logo_icon() -> egui::IconData {
-    let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/logo.jpeg"));
-    let dyn_img = image::open(path).expect("failed to open logo.jpeg");
+/// A corrupt or unsupported logo yields `None` rather than aborting startup.
+fn logo_icon() -> Option<egui::IconData> {
+    let dyn_img = image::load_from_memory(LOGO_JPEG).ok()?;
     let img = if !dyn_img.width().is_multiple_of(4) || !dyn_img.height().is_multiple_of(4) {
         dyn_img
             .resize(512, 512, image::imageops::FilterType::Lanczos3)
@@ -27,11 +34,11 @@ fn logo_icon() -> egui::IconData {
         rgba.push(((b as u16 * a as u16) / 255) as u8);
         rgba.push(a);
     }
-    egui::IconData {
+    Some(egui::IconData {
         rgba,
         width: w,
         height: h,
-    }
+    })
 }
 
 fn main() -> eframe::Result {
@@ -40,12 +47,20 @@ fn main() -> eframe::Result {
     // Any paths given on the command line are loaded at startup.
     let paths: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
 
+    let mut viewport = egui::ViewportBuilder::default()
+        // Fits a 1280×720 logical desktop (e.g. a 1920×1080 laptop at 150 %
+        // scaling). The old 1400×900 default was larger than the usable area,
+        // so the side panels and the plot footer were clipped on laptops.
+        .with_inner_size([1180.0, 720.0])
+        .with_min_inner_size([860.0, 560.0])
+        .with_app_id("flowers")
+        .with_title("flowers — flow cytometry analysis");
+    if let Some(icon) = logo_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1400.0, 900.0])
-            .with_min_inner_size([900.0, 600.0])
-            .with_title("flowers — flow cytometry analysis")
-            .with_icon(logo_icon()),
+        viewport,
         ..Default::default()
     };
 

@@ -62,6 +62,50 @@ cargo build --release
 | `flowers` | Command-line interface (load, gate, stats, plot, hist, compensate) |
 | `flowers-gui` | Desktop GUI application (egui) |
 
+### Installers (.msi / .dmg)
+
+Both installers wrap the native `flowers-gui` binary.
+
+**Windows — `.msi`** (built with the free [WiX Toolset v5](https://wixtoolset.org/)):
+
+```powershell
+dotnet tool install --global wix --version 5.0.2
+wix extension add -g WixToolset.UI.wixext/5.0.2
+
+cargo build --release --bin flowers-gui
+powershell -File packaging/windows/build-msi.ps1
+# -> target\release\flowers_0.2.0_x64_en-US.msi
+```
+
+`packaging/windows/build-msi.ps1` reads the version from `Cargo.toml`, builds the
+GUI, and runs `wix build` on `packaging/windows/flowers.wxs`. The installer copies
+`flowers.exe` and `LICENSE.txt` to `%ProgramFiles%\flowers`, adds Start Menu and
+Desktop shortcuts, shows the MIT licence in the wizard, and registers an entry in
+*Apps & features*. WiX v6/v7 are avoided because they require accepting the
+paid Open Source Maintenance Fee licence.
+
+**macOS — `.dmg`** (built with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager),
+the bundler from the Tauri project):
+
+```bash
+cargo install cargo-packager --locked
+cargo build --release --bin flowers-gui
+cargo packager --release -f dmg
+# -> target/release/flowers_0.2.0_<arch>.dmg
+```
+
+A `.dmg` can only be produced on macOS (`hdiutil`) and the `.msi` only on Windows,
+so `.github/workflows/installers.yml` builds both on GitHub-hosted runners;
+pushing a `v*` tag also attaches the installers to the release. The bundles are
+unsigned, so on macOS open the app once via **right-click → Open** to get past
+Gatekeeper.
+
+App icons live in `icons/` and are generated from `logo.jpeg`:
+
+```bash
+cargo run --release --example generate_icons
+```
+
 ## Quick Start
 
 ### GUI
@@ -83,7 +127,7 @@ cargo run --bin flowers-gui --release
 6. Gates appear in the **Gate tree** on the right, nested like a traditional flow cytometer gating hierarchy; select a gate to
    edit its geometry, name, colour, or parent. A selected gate shows **drag handles** on
    the plot (corner/edge handles enlarge or stretch, the diamond handle rotates, dragging the body
-   moves it) plus **nudge / rotate / scale** buttons in the editor. Click **◧** to open a
+   moves it) plus **nudge / rotate / scale** buttons in the editor. Click **↗** to open a
    detached window showing only that population — it has its own axes, ranges, scales,
    colour, view and gating controls.
 7. Use **File ▸ Export SVG** / **File ▸ Export Image…** for a single plot, and **File ▸ Export CSV** for
@@ -166,7 +210,11 @@ flowers/
 │   ├── D1_WT.fcs
 │   └── D2_WT + Recom.fcs
 ├── examples/           # Example programs
-│   └── gen_fcs.rs      # Generate synthetic FCS files for testing
+│   ├── gen_fcs.rs      # Generate synthetic FCS files for testing
+│   └── generate_icons.rs # Regenerate icons/ from logo.jpeg
+├── icons/              # App icons for .msi / .dmg / window icon
+├── packaging/windows/  # WiX source + script that builds the .msi
+├── .github/workflows/  # CI: builds the .msi and .dmg installers
 └── target/             # Build output (gitignored)
 ```
 
